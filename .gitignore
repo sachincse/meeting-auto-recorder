@@ -1,6 +1,9 @@
 # Environment
 .env
 
+# Config with credentials
+data/config.yaml
+
 # Database
 data/meetings.db
 
@@ -24,6 +27,9 @@ build/
 .idea/
 *.swp
 *.swo
+
+# Auto-generated launcher
+start_hidden.vbs
 
 # OS
 .DS_Store

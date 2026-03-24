@@ -1,40 +1,70 @@
-"""Central configuration loader — reads .env and config.yaml."""
+"""Central configuration loader — reads config.yaml (single source of truth)."""
 
 import os
+import logging
 from pathlib import Path
 
 import yaml
-from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+CONFIG_PATH = BASE_DIR / "data" / "config.yaml"
+DB_PATH = BASE_DIR / "data" / "meetings.db"
+LOG_PATH = BASE_DIR / "data" / "recorder.log"
+
+# Ensure data directory exists
+(BASE_DIR / "data").mkdir(parents=True, exist_ok=True)
 
 
 def load_config() -> dict:
-    config_path = BASE_DIR / "data" / "config.yaml"
-    if config_path.exists():
-        with open(config_path, "r") as f:
+    """Load config.yaml. This is the single source of truth for all settings."""
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH, "r") as f:
             return yaml.safe_load(f) or {}
     return {}
 
 
-def env(key: str, default: str = "") -> str:
-    return os.getenv(key, default)
+def get_email_accounts() -> list[dict]:
+    """Return list of enabled email accounts from config."""
+    cfg = load_config()
+    accounts = cfg.get("email_accounts", [])
+    return [a for a in accounts if a.get("enabled", True)]
 
 
-def env_bool(key: str, default: bool = False) -> bool:
-    return os.getenv(key, str(default)).lower() in ("true", "1", "yes")
+def get_recording_config() -> dict:
+    """Return recording settings with defaults."""
+    cfg = load_config()
+    rec = cfg.get("recording", {})
+    return {
+        "output_dir": rec.get("output_dir", str(BASE_DIR / "data" / "recordings")),
+        "record_mic": rec.get("record_mic", True),
+        "record_speaker": rec.get("record_speaker", True),
+        "record_screen": rec.get("record_screen", True),
+        "video_fps": rec.get("video_fps", 10),
+        "auto_open_meeting": rec.get("auto_open_meeting", True),
+    }
 
 
-# IMAP (email reading for meeting invites)
-IMAP_HOST = env("IMAP_HOST", "imap.gmail.com")
-IMAP_PORT = env("IMAP_PORT", "993")
-IMAP_USER = env("IMAP_USER")
-IMAP_PASS = env("IMAP_PASS")
-IMAP_FOLDER = env("IMAP_FOLDER", "INBOX")
+def get_scheduler_config() -> dict:
+    """Return scheduler settings with defaults."""
+    cfg = load_config()
+    sched = cfg.get("scheduler", {})
+    return {
+        "timezone": sched.get("timezone", "UTC"),
+        "scan_cron": sched.get("scan_cron", "*/15 * * * *"),
+        "pre_meeting_buffer_min": sched.get("pre_meeting_buffer_min", 1),
+        "default_duration_min": sched.get("default_duration_min", 90),
+        "max_emails_to_scan": sched.get("max_emails_to_scan", 100),
+    }
 
-# Recording settings
-RECORDING_FPS = int(env("RECORDING_FPS", "10"))
 
-# Database
-DB_PATH = BASE_DIR / "data" / "meetings.db"
+def get_tray_config() -> dict:
+    """Return tray/hotkey settings with defaults."""
+    cfg = load_config()
+    tray = cfg.get("tray", {})
+    return {
+        "hotkey_toggle_dashboard": tray.get("hotkey_toggle_dashboard", "ctrl+shift+m"),
+        "hotkey_stop_recording": tray.get("hotkey_stop_recording", "ctrl+shift+s"),
+        "show_notifications": tray.get("show_notifications", True),
+    }

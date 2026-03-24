@@ -4,3 +4,6 @@ pyyaml>=6.0.2
 aiosqlite>=0.20.0
 recordmymeeting>=0.1.0
 icalendar>=5.0.0
+pystray>=0.19.5
+Pillow>=10.0.0
+keyboard>=0.13.5
