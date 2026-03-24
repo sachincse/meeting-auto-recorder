@@ -35,7 +35,6 @@ IMAP_FOLDER = env("IMAP_FOLDER", "INBOX")
 
 # Recording settings
 RECORDING_FPS = int(env("RECORDING_FPS", "10"))
-MEETING_HEADLESS = env_bool("MEETING_HEADLESS", True)
 
 # Database
 DB_PATH = BASE_DIR / "data" / "meetings.db"

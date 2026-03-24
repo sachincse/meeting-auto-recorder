@@ -1,14 +1,14 @@
-"""Meeting recorder — uses recordmymeeting to capture audio/screen during meetings."""
+"""Meeting recorder — uses recordmymeeting to capture mic, speaker, and screen."""
 
 import asyncio
 import logging
+import webbrowser
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from recordmymeeting.core import RecordMyMeeting
 
-from src.config import BASE_DIR, env, env_bool, RECORDING_FPS
+from src.config import BASE_DIR, env_bool, RECORDING_FPS
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,12 @@ def _sanitize_filename(name: str) -> str:
 
 
 class MeetingRecorder:
-    """Joins a meeting URL via browser and records audio + screen."""
+    """Records mic + speaker + screen during a meeting.
+
+    recordmymeeting captures the actual system audio devices and screen,
+    so the user joins the meeting in their normal browser/app. This recorder
+    just starts/stops the capture around the scheduled time.
+    """
 
     def __init__(
         self,
@@ -35,9 +40,6 @@ class MeetingRecorder:
     ):
         self.meeting_url = meeting_url
         self.subject = subject
-        self.record_mic = record_mic
-        self.record_speaker = record_speaker
-        self.record_screen = record_screen
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         session_name = f"{timestamp}_{_sanitize_filename(subject)}"
@@ -51,42 +53,24 @@ class MeetingRecorder:
             video_fps=RECORDING_FPS,
             session_name=session_name,
         )
-        self._browser_page = None
         self._recording = False
 
-    async def join_meeting(self, headless: bool = True):
-        """Open the meeting URL in a browser."""
-        logger.info(f"Joining meeting: {self.meeting_url}")
-        from playwright.async_api import async_playwright
-
-        self._pw = await async_playwright().start()
-        self._browser = await self._pw.chromium.launch(
-            headless=headless,
-            args=[
-                "--use-fake-ui-for-media-stream",
-                "--use-fake-device-for-media-stream",
-                "--disable-web-security",
-                "--autoplay-policy=no-user-gesture-required",
-            ],
-        )
-        self._context = await self._browser.new_context(
-            permissions=["microphone", "camera"],
-            viewport={"width": 1920, "height": 1080},
-        )
-        self._browser_page = await self._context.new_page()
-        await self._browser_page.goto(self.meeting_url, wait_until="domcontentloaded")
-        await asyncio.sleep(5)
-        logger.info("Meeting page loaded")
+    def open_meeting_in_browser(self):
+        """Open the meeting URL in the user's default browser."""
+        auto_open = env_bool("AUTO_OPEN_MEETING", True)
+        if auto_open and self.meeting_url:
+            logger.info(f"Opening meeting in browser: {self.meeting_url}")
+            webbrowser.open(self.meeting_url)
 
     def start_recording(self):
-        """Start recording audio and screen."""
+        """Start recording mic, speaker, and screen."""
         if self._recording:
             logger.warning("Already recording")
             return
-        logger.info(f"Starting recording: mic={self.record_mic}, speaker={self.record_speaker}, screen={self.record_screen}")
+        logger.info(f"Starting recording for: {self.subject}")
         self.recorder.start()
         self._recording = True
-        logger.info("Recording started")
+        logger.info("Recording started (mic + speaker + screen)")
 
     def stop_recording(self) -> dict:
         """Stop recording and return file paths."""
@@ -100,33 +84,26 @@ class MeetingRecorder:
         logger.info(f"Recording saved: {status}")
         return status
 
-    async def leave_meeting(self):
-        """Close the browser."""
-        if self._browser:
-            await self._browser.close()
-        if self._pw:
-            await self._pw.stop()
-        self._browser_page = None
-        logger.info("Left meeting")
-
-    async def record_meeting(self, duration_seconds: Optional[int] = None):
+    async def record_meeting(self, duration_seconds: Optional[int] = None) -> dict:
         """
-        Full flow: join meeting, record for duration, stop, leave.
+        Full flow: open meeting URL, start recording, wait for duration, stop.
+
+        The meeting URL is opened in the user's default browser so they can
+        join normally. Recording captures system mic/speaker/screen in background.
 
         Args:
-            duration_seconds: How long to record. If None, records until
-                              the meeting end time (caller must stop manually).
+            duration_seconds: How long to record. If None, records indefinitely
+                              until Ctrl+C.
         """
-        headless = env_bool("MEETING_HEADLESS", True)
         try:
-            await self.join_meeting(headless=headless)
+            self.open_meeting_in_browser()
             self.start_recording()
 
             if duration_seconds:
-                logger.info(f"Recording for {duration_seconds} seconds...")
+                logger.info(f"Recording for {duration_seconds}s ({duration_seconds // 60} min)...")
                 await asyncio.sleep(duration_seconds)
             else:
-                logger.info("Recording indefinitely. Stop with Ctrl+C or call stop_recording()")
+                logger.info("Recording indefinitely. Stop with Ctrl+C.")
                 try:
                     while self._recording:
                         await asyncio.sleep(10)
@@ -135,7 +112,6 @@ class MeetingRecorder:
 
         finally:
             result = self.stop_recording()
-            await self.leave_meeting()
             return result
 
 
