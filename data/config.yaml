@@ -1,0 +1,5 @@
+# Meeting Auto-Recorder Configuration
+
+scheduler:
+  timezone: "Asia/Kolkata"
+  scan_cron: "*/15 * * * *"   # Scan emails every 15 minutes
