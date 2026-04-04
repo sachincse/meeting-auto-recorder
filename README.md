@@ -51,21 +51,28 @@ For Gmail, generate an App Password at: https://myaccount.google.com/apppassword
 ### 3. Run
 
 ```bash
-# Run in system tray (recommended)
 python main.py --tray
-
-# Enable auto-start on boot
-python main.py --install
-
-# One-shot scan
-python main.py --scan
-
-# Record a meeting right now
-python main.py --record "https://meet.google.com/abc-defg" --duration 3600
-
-# Check status
-python main.py --status
 ```
+
+This starts the app **hidden in the system tray** (small green icon in the taskbar). It will:
+- Scan your configured email accounts every 15 minutes
+- Detect meeting invitations (ICS calendar invites with Zoom/Meet/Teams links)
+- Automatically start recording mic + speaker + screen 1 minute before each meeting
+- Open the meeting URL in your default browser so you can join normally
+
+Press **Ctrl+Shift+M** to open the GUI dashboard at any time.
+
+### 4. Other Commands
+
+| Command | What it does |
+|---------|-------------|
+| `python main.py --tray` | **Recommended.** Runs silently in system tray. Scans emails on schedule, auto-records meetings. Access the GUI dashboard with Ctrl+Shift+M or by clicking the tray icon. |
+| `python main.py --install` | Registers the app to **auto-start on boot** (Windows: adds to registry startup, macOS: creates launchd plist). After this, the recorder runs every time you turn on your computer — no manual launch needed. |
+| `python main.py --uninstall` | Removes auto-start. The app will no longer launch on boot. |
+| `python main.py --scan` | **One-shot mode.** Scans your emails once, finds upcoming meetings, schedules recordings, then waits. Useful for testing — you can see exactly which meetings were detected. Exits after all scheduled recordings are done. |
+| `python main.py --schedule` | Like `--scan` but **keeps running in the foreground** and re-scans every 15 minutes. Same as `--tray` but without the system tray icon (shows output in terminal). |
+| `python main.py --record URL` | **Record a meeting right now.** Opens the URL in your browser and immediately starts recording mic + speaker + screen. Add `--duration 3600` to stop after 1 hour (in seconds), or omit for indefinite recording (stop via Ctrl+C or Ctrl+Shift+S). |
+| `python main.py --status` | Prints a summary: auto-start status, email accounts configured, meeting stats (total/scheduled/recorded/failed), upcoming meetings, and hotkey bindings. Quick way to check everything is working. |
 
 ## Windows Setup (Speaker Capture)
 
@@ -148,15 +155,16 @@ meeting-auto-recorder/
 
 ## CLI Reference
 
-```
-python main.py --tray          # System tray mode (recommended)
-python main.py --scan          # One-shot: scan emails, wait for recordings
-python main.py --schedule      # Continuous foreground mode
-python main.py --record URL    # Record a meeting immediately
-python main.py --install       # Enable auto-start on boot
-python main.py --uninstall     # Disable auto-start
-python main.py --status        # Show status and exit
-```
+| Command | Description |
+|---------|-------------|
+| `python main.py --tray` | Run hidden in system tray (recommended for daily use) |
+| `python main.py --scan` | One-shot: scan emails, schedule recordings, wait, then exit |
+| `python main.py --schedule` | Continuous foreground mode (like --tray but with terminal output) |
+| `python main.py --record URL` | Record a specific meeting immediately |
+| `python main.py --record URL --duration 3600` | Record for exactly 1 hour (seconds) |
+| `python main.py --install` | Enable auto-start on system boot |
+| `python main.py --uninstall` | Disable auto-start |
+| `python main.py --status` | Print status summary and exit |
 
 ## License
 
