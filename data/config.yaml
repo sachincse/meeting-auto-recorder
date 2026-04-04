@@ -1,0 +1,55 @@
+# ============================================
+# Meeting Auto-Recorder — Configuration
+# ============================================
+# Edit this file to customize behavior.
+# Changes are picked up on next scan cycle or via tray > Reload Config.
+
+# --- Email Accounts ---
+# Add multiple IMAP accounts to monitor for meeting invites.
+# For Gmail: use App Passwords (https://myaccount.google.com/apppasswords)
+email_accounts:
+  - name: "Personal Gmail"
+    imap_host: "imap.gmail.com"
+    imap_port: 993
+    imap_user: "sachincs95@gmail.com"
+    imap_pass: "vmclvrtfmdsilylb"
+    imap_folder: "INBOX"
+    enabled: true
+
+  # - name: "Work Email"
+  #   imap_host: "imap.gmail.com"
+  #   imap_port: 993
+  #   imap_user: "you@company.com"
+  #   imap_pass: "xxxx xxxx xxxx xxxx"
+  #   imap_folder: "INBOX"
+  #   enabled: true
+
+# --- Recording ---
+recording:
+  output_dir: "C:/Users/sachi/Documents/MeetingRecordings"   # Where to save recordings
+  record_mic: true            # Record microphone
+  record_speaker: true        # Record system/speaker audio
+  record_screen: true         # Record screen
+  video_fps: 10               # Screen recording frame rate
+  auto_open_meeting: true     # Open meeting URL in browser when recording starts
+
+# --- Scheduler ---
+scheduler:
+  timezone: "Asia/Kolkata"
+  scan_cron: "*/15 * * * *"   # How often to scan emails (every 15 min)
+  pre_meeting_buffer_min: 1   # Start recording N minutes before meeting
+  default_duration_min: 90    # Default recording duration if no end time in invite
+  max_emails_to_scan: 500     # How many recent emails to scan per account
+
+# --- Audio Devices (override auto-detect) ---
+# Set to null for auto-detect, or specify device index from the Settings tab.
+devices:
+  mic_index: null             # null = auto-detect
+  speaker_index: null         # null = auto-detect (WASAPI loopback on Windows)
+
+# --- System Tray & Hotkeys ---
+# Hotkey format uses pynput syntax: <ctrl>+<shift>+key
+tray:
+  hotkey_toggle_dashboard: "<ctrl>+<shift>+m"    # Show/hide the GUI dashboard
+  hotkey_stop_recording: "<ctrl>+<shift>+s"      # Emergency stop current recording
+  show_notifications: true                        # Desktop notifications

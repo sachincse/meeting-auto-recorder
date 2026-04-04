@@ -1,9 +1,8 @@
-"""Windows auto-start management — adds/removes from Startup via registry + VBS."""
+"""Cross-platform auto-start management (Windows registry + macOS launchd)."""
 
 import logging
 import os
 import sys
-import winreg
 from pathlib import Path
 
 from src.config import BASE_DIR
@@ -11,81 +10,169 @@ from src.config import BASE_DIR
 logger = logging.getLogger(__name__)
 
 APP_NAME = "MeetingAutoRecorder"
-STARTUP_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+_IS_WIN = sys.platform == "win32"
+_IS_MAC = sys.platform == "darwin"
 
 
-def _get_pythonw_path() -> str:
-    """Get path to pythonw.exe (windowless Python) next to current python.exe."""
-    python_dir = Path(sys.executable).parent
-    pythonw = python_dir / "pythonw.exe"
-    if pythonw.exists():
-        return str(pythonw)
-    return sys.executable
+# ---------------------------------------------------------------------------
+# Windows
+# ---------------------------------------------------------------------------
+
+def _win_get_pythonw() -> str:
+    pythonw = Path(sys.executable).parent / "pythonw.exe"
+    return str(pythonw) if pythonw.exists() else sys.executable
 
 
-def _get_vbs_path() -> Path:
-    """Path to the VBS launcher script that starts the app hidden."""
+def _win_vbs_path() -> Path:
     return BASE_DIR / "start_hidden.vbs"
 
 
-def _create_vbs_launcher():
-    """Create a VBS script that launches the app with no visible window."""
-    vbs_path = _get_vbs_path()
-    pythonw = _get_pythonw_path()
+def _win_create_vbs():
+    vbs = _win_vbs_path()
+    pythonw = _win_get_pythonw()
     main_py = str(BASE_DIR / "main.py")
-
-    vbs_content = f'''Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run """{pythonw}"" ""{main_py}"" --tray", 0, False
-'''
-    vbs_path.write_text(vbs_content)
-    logger.info(f"Created VBS launcher: {vbs_path}")
-    return str(vbs_path)
+    vbs.write_text(
+        f'Set WshShell = CreateObject("WScript.Shell")\n'
+        f'WshShell.Run """{pythonw}"" ""{main_py}"" --tray", 0, False\n'
+    )
+    return str(vbs)
 
 
-def enable_autostart():
-    """Add Meeting Auto-Recorder to Windows startup (runs hidden)."""
-    vbs_path = _create_vbs_launcher()
+def _win_enable():
+    import winreg
+    vbs = _win_create_vbs()
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                         r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                         0, winreg.KEY_SET_VALUE)
+    winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'wscript.exe "{vbs}"')
+    winreg.CloseKey(key)
+    return True
 
+
+def _win_disable():
+    import winreg
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE)
-        winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'wscript.exe "{vbs_path}"')
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                             0, winreg.KEY_SET_VALUE)
+        winreg.DeleteValue(key, APP_NAME)
         winreg.CloseKey(key)
-        logger.info(f"Auto-start enabled: {APP_NAME}")
+    except FileNotFoundError:
+        pass
+    vbs = _win_vbs_path()
+    if vbs.exists():
+        vbs.unlink()
+    return True
+
+
+def _win_is_enabled() -> bool:
+    import winreg
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                             0, winreg.KEY_READ)
+        winreg.QueryValueEx(key, APP_NAME)
+        winreg.CloseKey(key)
         return True
+    except (FileNotFoundError, OSError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# macOS
+# ---------------------------------------------------------------------------
+
+_PLIST_NAME = "com.meetingrecorder.autostart"
+
+
+def _mac_plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{_PLIST_NAME}.plist"
+
+
+def _mac_enable():
+    python = sys.executable
+    main_py = str(BASE_DIR / "main.py")
+    log_path = str(BASE_DIR / "data" / "launchd.log")
+    plist = _mac_plist_path()
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{_PLIST_NAME}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python}</string>
+        <string>{main_py}</string>
+        <string>--tray</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>{log_path}</string>
+    <key>StandardErrorPath</key>
+    <string>{log_path}</string>
+</dict>
+</plist>
+""")
+    os.system(f"launchctl load '{plist}'")
+    return True
+
+
+def _mac_disable():
+    plist = _mac_plist_path()
+    if plist.exists():
+        os.system(f"launchctl unload '{plist}'")
+        plist.unlink()
+    return True
+
+
+def _mac_is_enabled() -> bool:
+    return _mac_plist_path().exists()
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def enable_autostart() -> bool:
+    try:
+        if _IS_WIN:
+            return _win_enable()
+        elif _IS_MAC:
+            return _mac_enable()
+        else:
+            logger.warning("Auto-start not supported on this platform")
+            return False
     except Exception as e:
         logger.error(f"Failed to enable auto-start: {e}")
         return False
 
 
-def disable_autostart():
-    """Remove Meeting Auto-Recorder from Windows startup."""
+def disable_autostart() -> bool:
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE)
-        winreg.DeleteValue(key, APP_NAME)
-        winreg.CloseKey(key)
-        logger.info(f"Auto-start disabled: {APP_NAME}")
-
-        vbs_path = _get_vbs_path()
-        if vbs_path.exists():
-            vbs_path.unlink()
-
-        return True
-    except FileNotFoundError:
-        logger.info("Auto-start was not enabled")
-        return True
+        if _IS_WIN:
+            return _win_disable()
+        elif _IS_MAC:
+            return _mac_disable()
+        else:
+            return False
     except Exception as e:
         logger.error(f"Failed to disable auto-start: {e}")
         return False
 
 
 def is_autostart_enabled() -> bool:
-    """Check if auto-start is currently enabled."""
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_READ)
-        winreg.QueryValueEx(key, APP_NAME)
-        winreg.CloseKey(key)
-        return True
-    except FileNotFoundError:
-        return False
+        if _IS_WIN:
+            return _win_is_enabled()
+        elif _IS_MAC:
+            return _mac_is_enabled()
+        else:
+            return False
     except Exception:
         return False

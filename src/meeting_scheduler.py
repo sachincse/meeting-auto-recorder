@@ -14,6 +14,25 @@ from src.meeting_recorder import MeetingRecorder, set_active_recorder
 
 logger = logging.getLogger(__name__)
 
+# Pause flag
+_scanning_paused = False
+
+
+def pause_scanning():
+    global _scanning_paused
+    _scanning_paused = True
+    logger.info("Email scanning paused")
+
+
+def resume_scanning():
+    global _scanning_paused
+    _scanning_paused = False
+    logger.info("Email scanning resumed")
+
+
+def is_scanning_paused() -> bool:
+    return _scanning_paused
+
 
 async def _log_meeting_event(meeting_id: int, event: str):
     conn = await db.get_db()
@@ -29,6 +48,15 @@ async def _record_meeting_task(meeting_id: int, meeting_url: str, subject: str, 
     """Task that records a meeting. Called by APScheduler at the scheduled time."""
     logger.info(f"Auto-recording starting for meeting #{meeting_id}: {subject}")
     await _log_meeting_event(meeting_id, "recording")
+
+    try:
+        from src.notifier import notify
+        notify("Recording Started", f"{subject}")
+
+        from src.tray_app import update_tray_icon
+        update_tray_icon(recording=True)
+    except Exception:
+        pass
 
     try:
         recorder = MeetingRecorder(meeting_url=meeting_url, subject=subject)
@@ -50,10 +78,21 @@ async def _record_meeting_task(meeting_id: int, meeting_url: str, subject: str, 
         await _log_meeting_event(meeting_id, "failed")
     finally:
         set_active_recorder(None)
+        try:
+            from src.tray_app import update_tray_icon
+            update_tray_icon(recording=False)
+            from src.notifier import notify
+            notify("Recording Finished", f"{subject}")
+        except Exception:
+            pass
 
 
-async def scan_emails_and_schedule(scheduler: AsyncIOScheduler):
+async def scan_emails_and_schedule(scheduler: AsyncIOScheduler) -> int:
     """Scan all email accounts for meeting invites, store in DB, schedule recordings."""
+    if _scanning_paused:
+        logger.info("Scanning is paused, skipping")
+        return 0
+
     logger.info("Scanning emails for meeting invitations...")
     sched_cfg = get_scheduler_config()
     meetings = fetch_meeting_invites()
@@ -142,6 +181,50 @@ async def scan_emails_and_schedule(scheduler: AsyncIOScheduler):
     return scheduled_count
 
 
+async def schedule_manual_meeting(
+    scheduler: AsyncIOScheduler,
+    meeting_url: str,
+    subject: str,
+    start_time: datetime,
+    duration_minutes: int,
+) -> int:
+    """Schedule a manually-entered meeting recording. Returns meeting_id."""
+    duration_seconds = max(300, min(duration_minutes * 60, 4 * 3600))
+
+    conn = await db.get_db()
+    cursor = await conn.execute(
+        """INSERT INTO meetings
+           (subject, meeting_url, start_time, end_time, duration_seconds,
+            organizer, source, status)
+           VALUES (?, ?, ?, ?, ?, ?, 'manual', 'scheduled')""",
+        (
+            subject, meeting_url, start_time.isoformat(), None,
+            duration_seconds, "",
+        ),
+    )
+    meeting_id = cursor.lastrowid
+    await conn.commit()
+    await conn.close()
+
+    sched_cfg = get_scheduler_config()
+    now = datetime.now(timezone.utc)
+    record_at = start_time - timedelta(minutes=sched_cfg["pre_meeting_buffer_min"])
+    if record_at < now:
+        record_at = now + timedelta(seconds=10)
+
+    scheduler.add_job(
+        _record_meeting_task,
+        trigger=DateTrigger(run_date=record_at),
+        args=[meeting_id, meeting_url, subject, duration_seconds],
+        id=f"meeting_record_{meeting_id}",
+        name=f"Record: {subject[:50]}",
+        replace_existing=True,
+    )
+
+    logger.info(f"Manually scheduled '{subject}' at {record_at.isoformat()} [#{meeting_id}]")
+    return meeting_id
+
+
 async def get_upcoming_meetings() -> list[dict]:
     conn = await db.get_db()
     cursor = await conn.execute(
@@ -149,6 +232,19 @@ async def get_upcoming_meetings() -> list[dict]:
            WHERE status IN ('scheduled', 'recording')
              AND start_time > datetime('now', '-1 hour')
            ORDER BY start_time ASC"""
+    )
+    rows = await cursor.fetchall()
+    await conn.close()
+    return [dict(r) for r in rows]
+
+
+async def get_meeting_history(limit: int = 50) -> list[dict]:
+    conn = await db.get_db()
+    cursor = await conn.execute(
+        """SELECT * FROM meetings
+           ORDER BY start_time DESC
+           LIMIT ?""",
+        (limit,),
     )
     rows = await cursor.fetchall()
     await conn.close()

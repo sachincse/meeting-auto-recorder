@@ -1,114 +1,67 @@
-"""System tray application — runs hidden, provides hotkeys and status dashboard."""
+"""System tray application — runs hidden, provides hotkeys and launches dashboard."""
 
 import asyncio
 import logging
 import os
+import subprocess
 import sys
 import threading
-from pathlib import Path
 
 import pystray
 from PIL import Image, ImageDraw
 from pystray import MenuItem, Menu
 
 from src.config import BASE_DIR, get_tray_config, get_recording_config, CONFIG_PATH
+from src.notifier import set_tray_icon, notify
+from src.meeting_scheduler import pause_scanning, resume_scanning, is_scanning_paused
 
 logger = logging.getLogger(__name__)
 
-# Global references
 _tray_icon: pystray.Icon = None
 _event_loop: asyncio.AbstractEventLoop = None
-_dashboard_visible = False
 
 
 def _create_icon_image(recording: bool = False) -> Image.Image:
-    """Create a simple tray icon — green circle when idle, red when recording."""
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     color = (220, 40, 40) if recording else (60, 160, 60)
     draw.ellipse([8, 8, 56, 56], fill=color)
-    # White inner circle
     draw.ellipse([20, 20, 44, 44], fill=(255, 255, 255))
     if recording:
-        # Red dot in center when recording
         draw.ellipse([26, 26, 38, 38], fill=(220, 40, 40))
     return img
 
 
 def update_tray_icon(recording: bool = False):
-    """Update the tray icon to reflect recording state."""
-    global _tray_icon
     if _tray_icon:
         _tray_icon.icon = _create_icon_image(recording)
-        status = "Recording..." if recording else "Idle — monitoring emails"
+        status = "Recording..." if recording else "Idle"
         _tray_icon.title = f"Meeting Recorder — {status}"
 
 
-def show_notification(title: str, message: str):
-    """Show a Windows toast notification via the tray icon."""
-    cfg = get_tray_config()
-    if not cfg["show_notifications"]:
-        return
-    if _tray_icon:
-        try:
-            _tray_icon.notify(message, title)
-        except Exception as e:
-            logger.debug(f"Notification failed: {e}")
+def _open_path(path: str):
+    if sys.platform == "win32":
+        os.startfile(path)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
 
+
+# ── Menu Callbacks ────────────────────────────────────────────────────
 
 def _on_show_dashboard(icon, item):
-    """Show status in a console window."""
-    _show_dashboard()
+    from src.gui_dashboard import toggle_dashboard
+    toggle_dashboard()
 
 
-def _show_dashboard():
-    """Print status dashboard to a popup console."""
-    from src.meeting_recorder import get_active_recorder
-
-    recorder = get_active_recorder()
-    rec_cfg = get_recording_config()
-
-    lines = [
-        "=" * 50,
-        "  MEETING AUTO-RECORDER STATUS",
-        "=" * 50,
-        "",
-        f"  Recording:    {'YES' if (recorder and recorder.is_recording) else 'No'}",
-        f"  Output Dir:   {rec_cfg['output_dir']}",
-        f"  Config File:  {CONFIG_PATH}",
-        "",
-    ]
-
-    if recorder and recorder.is_recording:
-        lines.append(f"  Current:      {recorder.subject}")
-        lines.append(f"  Meeting URL:  {recorder.meeting_url}")
-
-    lines.extend([
-        "",
-        "  Hotkeys:",
-        f"    Toggle Dashboard:  {get_tray_config()['hotkey_toggle_dashboard']}",
-        f"    Stop Recording:    {get_tray_config()['hotkey_stop_recording']}",
-        "",
-        "=" * 50,
-    ])
-
-    print("\n".join(lines))
-
-
-def _on_open_recordings(icon, item):
-    rec_cfg = get_recording_config()
-    output_dir = rec_cfg["output_dir"]
-    if os.path.isdir(output_dir):
-        os.startfile(output_dir)
-
-
-def _on_open_config(icon, item):
-    os.startfile(str(CONFIG_PATH))
-
-
-def _on_reload_config(icon, item):
-    show_notification("Config Reloaded", "Configuration has been reloaded from config.yaml")
-    logger.info("Configuration reloaded")
+def _on_pause_resume(icon, item):
+    if is_scanning_paused():
+        resume_scanning()
+        notify("Scanning Resumed", "Email scanning is active again.")
+    else:
+        pause_scanning()
+        notify("Scanning Paused", "Email scanning is paused.")
 
 
 def _on_stop_recording(icon, item):
@@ -117,51 +70,41 @@ def _on_stop_recording(icon, item):
     if recorder and recorder.is_recording:
         recorder.stop_recording()
         update_tray_icon(recording=False)
-        show_notification("Recording Stopped", "Meeting recording stopped manually.")
-        logger.info("Recording stopped via tray menu")
+        notify("Recording Stopped", "Meeting recording stopped manually.")
     else:
-        show_notification("No Active Recording", "No meeting is being recorded right now.")
+        notify("No Recording", "No meeting is being recorded right now.")
+
+
+def _on_open_recordings(icon, item):
+    path = get_recording_config()["output_dir"]
+    if os.path.isdir(path):
+        _open_path(path)
+
+
+def _on_open_config(icon, item):
+    _open_path(str(CONFIG_PATH))
+
+
+def _on_reload_config(icon, item):
+    notify("Config Reloaded", "Configuration reloaded from config.yaml")
 
 
 def _on_quit(icon, item):
     logger.info("Quit requested from tray")
     icon.stop()
-    # Signal the event loop to stop
     if _event_loop and _event_loop.is_running():
         _event_loop.call_soon_threadsafe(_event_loop.stop)
 
 
-def _setup_hotkeys():
-    """Register global hotkeys in a background thread."""
-    try:
-        import keyboard
-    except ImportError:
-        logger.warning("'keyboard' package not installed — hotkeys disabled")
-        return
-
-    cfg = get_tray_config()
-
-    def _toggle_dashboard():
-        _show_dashboard()
-
-    def _emergency_stop():
-        _on_stop_recording(None, None)
-
-    try:
-        keyboard.add_hotkey(cfg["hotkey_toggle_dashboard"], _toggle_dashboard)
-        keyboard.add_hotkey(cfg["hotkey_stop_recording"], _emergency_stop)
-        logger.info(
-            f"Hotkeys registered: dashboard={cfg['hotkey_toggle_dashboard']}, "
-            f"stop={cfg['hotkey_stop_recording']}"
-        )
-    except Exception as e:
-        logger.warning(f"Failed to register hotkeys: {e}")
+def _pause_label(item):
+    return "Resume Scanning" if is_scanning_paused() else "Pause Scanning"
 
 
 def create_tray_menu() -> Menu:
     return Menu(
-        MenuItem("Status Dashboard", _on_show_dashboard),
+        MenuItem("Show Dashboard", _on_show_dashboard, default=True),
         Menu.SEPARATOR,
+        MenuItem(_pause_label, _on_pause_resume),
         MenuItem("Stop Current Recording", _on_stop_recording),
         Menu.SEPARATOR,
         MenuItem("Open Recordings Folder", _on_open_recordings),
@@ -172,10 +115,49 @@ def create_tray_menu() -> Menu:
     )
 
 
-def start_tray(event_loop: asyncio.AbstractEventLoop):
+# ── Hotkeys ───────────────────────────────────────────────────────────
+
+def _setup_hotkeys():
+    """Register global hotkeys via pynput (cross-platform)."""
+    try:
+        from pynput import keyboard as pynput_kb
+    except ImportError:
+        logger.warning("'pynput' not installed — hotkeys disabled. pip install pynput")
+        return
+
+    cfg = get_tray_config()
+
+    hotkeys = {}
+    try:
+        from src.gui_dashboard import toggle_dashboard
+        hotkeys[cfg["hotkey_toggle_dashboard"]] = toggle_dashboard
+    except Exception:
+        pass
+    try:
+        hotkeys[cfg["hotkey_stop_recording"]] = lambda: _on_stop_recording(None, None)
+    except Exception:
+        pass
+
+    if hotkeys:
+        try:
+            listener = pynput_kb.GlobalHotKeys(hotkeys)
+            listener.daemon = True
+            listener.start()
+            logger.info(f"Hotkeys registered: {list(hotkeys.keys())}")
+        except Exception as e:
+            logger.warning(f"Failed to register hotkeys: {e}")
+
+
+# ── Entry Point ───────────────────────────────────────────────────────
+
+def start_tray(event_loop: asyncio.AbstractEventLoop, scheduler=None):
     """Start the system tray icon. Call from the main thread."""
     global _tray_icon, _event_loop
     _event_loop = event_loop
+
+    # Initialize GUI dashboard in background thread
+    from src.gui_dashboard import init_dashboard
+    init_dashboard(event_loop, scheduler)
 
     _setup_hotkeys()
 
@@ -185,6 +167,7 @@ def start_tray(event_loop: asyncio.AbstractEventLoop):
         title="Meeting Recorder — Idle",
         menu=create_tray_menu(),
     )
+    set_tray_icon(_tray_icon)
 
     logger.info("System tray started")
     _tray_icon.run()

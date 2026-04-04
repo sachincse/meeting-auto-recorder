@@ -1,10 +1,9 @@
 apscheduler>=3.10.4
-python-dotenv>=1.0.1
 pyyaml>=6.0.2
 aiosqlite>=0.20.0
 recordmymeeting>=0.1.0
 icalendar>=5.0.0
 pystray>=0.19.5
 Pillow>=10.0.0
-keyboard>=0.13.5
-pyaudiowpatch>=0.2.12
+pynput>=1.7.6
+pyaudiowpatch>=0.2.12; sys_platform == "win32"
