@@ -127,7 +127,6 @@ def run_tray_mode():
 
     def _run_scheduler():
         asyncio.set_event_loop(loop)
-        # Create scheduler inline so we can pass it to the tray
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
         from src.config import get_scheduler_config
@@ -152,22 +151,28 @@ def run_tray_mode():
                 from src.notifier import notify
                 notify("Meetings Found", f"Scheduled {count} new recording(s)")
 
-        scheduler.add_job(
-            _scan_task,
-            trigger=CronTrigger(**cron_kwargs, timezone=tz),
-            id="scan_meetings",
-            name="Scan emails for meetings",
-            replace_existing=True,
-        )
-        scheduler.start()
-        logger.info(f"Scheduler started — scanning every: {scan_cron} ({tz})")
+        async def _bootstrap():
+            """Start scheduler inside a running event loop."""
+            scheduler.start()
+            logger.info(f"Scheduler started — scanning every: {scan_cron} ({tz})")
 
-        # Initial scan
-        loop.run_until_complete(scan_emails_and_schedule(scheduler))
+            scheduler.add_job(
+                _scan_task,
+                trigger=CronTrigger(**cron_kwargs, timezone=tz),
+                id="scan_meetings",
+                name="Scan emails for meetings",
+                replace_existing=True,
+            )
 
-        # Keep running
+            # Initial scan
+            await scan_emails_and_schedule(scheduler)
+
+            # Keep running forever
+            while True:
+                await asyncio.sleep(60)
+
         try:
-            loop.run_forever()
+            loop.run_until_complete(_bootstrap())
         except Exception:
             pass
         finally:

@@ -21,13 +21,12 @@ _gui_thread: Optional[threading.Thread] = None
 
 def _run_async(coro):
     """Run an async coroutine from the GUI thread and return the result."""
-    if not _loop:
+    if not _loop or not _loop.is_running():
         return None
     future = asyncio.run_coroutine_threadsafe(coro, _loop)
     try:
-        return future.result(timeout=10)
-    except Exception as e:
-        logger.error(f"Async call failed: {e}")
+        return future.result(timeout=15)
+    except Exception:
         return None
 
 
