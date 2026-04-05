@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 _root: Optional[tk.Tk] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
-_scheduler = None  # APScheduler reference
+_scheduler = None
 _gui_thread: Optional[threading.Thread] = None
 
 
@@ -31,7 +31,6 @@ def _run_async(coro):
 
 
 def _open_path(path: str):
-    """Cross-platform open folder/file."""
     if sys.platform == "win32":
         os.startfile(path)
     elif sys.platform == "darwin":
@@ -44,13 +43,31 @@ class DashboardApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title("Meeting Auto-Recorder")
-        root.geometry("780x520")
+        root.geometry("900x600")
+        root.minsize(700, 450)
         root.resizable(True, True)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         style = ttk.Style()
         style.theme_use("clam" if sys.platform != "darwin" else "aqua")
+        # Make treeview rows taller
+        style.configure("Treeview", rowheight=28)
 
+        # Top bar with Start/Stop buttons always visible
+        top_bar = ttk.Frame(root)
+        top_bar.pack(fill=tk.X, padx=10, pady=(8, 0))
+
+        self._status_label = ttk.Label(top_bar, text="Idle", font=("Segoe UI", 11, "bold"))
+        self._status_label.pack(side=tk.LEFT)
+
+        self._stop_btn = ttk.Button(top_bar, text="Stop Recording", command=self._stop_recording)
+        self._stop_btn.pack(side=tk.RIGHT, padx=2)
+        self._stop_btn.state(["disabled"])
+
+        self._start_btn = ttk.Button(top_bar, text="Start Recording", command=self._start_quick_record)
+        self._start_btn.pack(side=tk.RIGHT, padx=2)
+
+        # Notebook fills the rest
         notebook = ttk.Notebook(root)
         notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
@@ -61,6 +78,58 @@ class DashboardApp:
 
         self._refresh_upcoming()
         self._refresh_history()
+        self._update_recording_status()
+
+    # ── Top bar actions ───────────────────────────────────────────────
+
+    def _start_quick_record(self):
+        """Start recording immediately (no URL needed — just captures mic+speaker+screen)."""
+        from src.meeting_recorder import MeetingRecorder, set_active_recorder, get_active_recorder
+
+        if get_active_recorder() and get_active_recorder().is_recording:
+            return
+
+        subject = "Manual Recording"
+        recorder = MeetingRecorder(meeting_url="", subject=subject)
+        set_active_recorder(recorder)
+        recorder.start_recording()
+
+        logger.info("Manual recording started from GUI")
+        self._update_recording_status()
+
+    def _stop_recording(self):
+        from src.meeting_recorder import get_active_recorder, set_active_recorder
+
+        rec = get_active_recorder()
+        if rec and rec.is_recording:
+            result = rec.stop_recording()
+            set_active_recorder(None)
+            logger.info(f"Recording stopped from GUI: {result.get('session_folder', 'unknown')}")
+
+            try:
+                from src.tray_app import update_tray_icon
+                update_tray_icon(recording=False)
+            except Exception:
+                pass
+
+        self._update_recording_status()
+        self._refresh_upcoming()
+
+    def _update_recording_status(self):
+        from src.meeting_recorder import get_active_recorder
+
+        rec = get_active_recorder()
+        if rec and rec.is_recording:
+            self._status_label.config(text=f"RECORDING: {rec.subject}", foreground="red")
+            self._start_btn.state(["disabled"])
+            self._stop_btn.state(["!disabled"])
+        else:
+            self._status_label.config(text="Idle — monitoring emails", foreground="green")
+            self._start_btn.state(["!disabled"])
+            self._stop_btn.state(["disabled"])
+
+        # Check again in 5 seconds
+        self.root.after(5000, self._update_recording_status)
 
     # ── Tab 1: Upcoming Meetings ──────────────────────────────────────
 
@@ -68,33 +137,35 @@ class DashboardApp:
         frame = ttk.Frame(notebook)
         notebook.add(frame, text="  Upcoming Meetings  ")
 
-        # Stats bar
         self._stats_label = ttk.Label(frame, text="Loading...", font=("Segoe UI", 10))
         self._stats_label.pack(anchor="w", padx=10, pady=(10, 0))
 
-        # Treeview
+        # Treeview with scrollbar
+        tree_frame = ttk.Frame(frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
         cols = ("subject", "start", "duration", "status", "source")
-        self._upcoming_tree = ttk.Treeview(frame, columns=cols, show="headings", height=12)
+        self._upcoming_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
         self._upcoming_tree.heading("subject", text="Subject")
         self._upcoming_tree.heading("start", text="Start Time")
         self._upcoming_tree.heading("duration", text="Duration")
         self._upcoming_tree.heading("status", text="Status")
         self._upcoming_tree.heading("source", text="Source")
-        self._upcoming_tree.column("subject", width=250)
-        self._upcoming_tree.column("start", width=170)
-        self._upcoming_tree.column("duration", width=80)
-        self._upcoming_tree.column("status", width=90)
-        self._upcoming_tree.column("source", width=80)
-        self._upcoming_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self._upcoming_tree.column("subject", width=250, minwidth=150)
+        self._upcoming_tree.column("start", width=170, minwidth=120)
+        self._upcoming_tree.column("duration", width=80, minwidth=60)
+        self._upcoming_tree.column("status", width=90, minwidth=70)
+        self._upcoming_tree.column("source", width=80, minwidth=60)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._upcoming_tree.yview)
+        self._upcoming_tree.configure(yscrollcommand=scrollbar.set)
+        self._upcoming_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         btn_frame = ttk.Frame(frame)
         btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
         ttk.Button(btn_frame, text="Refresh", command=self._refresh_upcoming).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Scan Emails Now", command=self._scan_now).pack(side=tk.LEFT, padx=5)
-
-        # Active recording indicator
-        self._active_label = ttk.Label(frame, text="", foreground="red", font=("Segoe UI", 10, "bold"))
-        self._active_label.pack(anchor="w", padx=10)
 
         self.root.after(30000, self._auto_refresh)
 
@@ -121,28 +192,20 @@ class DashboardApp:
                 m.get("source", "?"),
             ))
 
-        # Active recording
-        from src.meeting_recorder import get_active_recorder
-        rec = get_active_recorder()
-        if rec and rec.is_recording:
-            self._active_label.config(text=f"RECORDING: {rec.subject}")
-        else:
-            self._active_label.config(text="")
-
     def _scan_now(self):
         if not _scheduler:
-            messagebox.showwarning("Not Running", "Scheduler not running. Start with --tray or --schedule.")
+            messagebox.showwarning("Not Running", "Scheduler not running.")
             return
         from src.meeting_scheduler import scan_emails_and_schedule
         count = _run_async(scan_emails_and_schedule(_scheduler))
         self._refresh_upcoming()
-        messagebox.showinfo("Scan Complete", f"Found {count or 0} new meeting(s).")
+        logger.info(f"Manual scan: found {count or 0} meetings")
 
     def _auto_refresh(self):
         self._refresh_upcoming()
         self.root.after(30000, self._auto_refresh)
 
-    # ── Tab 2: Record Now / Schedule ──────────────────────────────────
+    # ── Tab 2: Record / Schedule ──────────────────────────────────────
 
     def _build_record_tab(self, notebook):
         frame = ttk.Frame(notebook)
@@ -151,7 +214,7 @@ class DashboardApp:
         form = ttk.LabelFrame(frame, text="Schedule a Recording")
         form.pack(fill=tk.X, padx=10, pady=10)
 
-        ttk.Label(form, text="Meeting URL:").grid(row=0, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(form, text="Meeting URL (optional):").grid(row=0, column=0, sticky="w", padx=5, pady=3)
         self._rec_url = ttk.Entry(form, width=50)
         self._rec_url.grid(row=0, column=1, columnspan=2, padx=5, pady=3, sticky="ew")
 
@@ -182,19 +245,12 @@ class DashboardApp:
         ttk.Button(btn_frame, text="Schedule Recording", command=self._schedule_meeting).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Record Now", command=self._record_now).pack(side=tk.LEFT, padx=10)
 
-        # Stop button
-        self._stop_btn = ttk.Button(btn_frame, text="Stop Current Recording", command=self._stop_recording)
-        self._stop_btn.pack(side=tk.RIGHT)
-
     def _schedule_meeting(self):
         if not _scheduler:
             messagebox.showwarning("Not Running", "Scheduler not running.")
             return
-        url = self._rec_url.get().strip()
+        url = self._rec_url.get().strip() or "manual"
         subject = self._rec_subject.get().strip() or "Meeting"
-        if not url:
-            messagebox.showwarning("Missing URL", "Please enter a meeting URL.")
-            return
         try:
             dt_str = f"{self._rec_date.get().strip()} {self._rec_time.get().strip()}"
             start = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
@@ -207,46 +263,52 @@ class DashboardApp:
         from src.meeting_scheduler import schedule_manual_meeting
         mid = _run_async(schedule_manual_meeting(_scheduler, url, subject, start, dur))
         self._refresh_upcoming()
-        messagebox.showinfo("Scheduled", f"Meeting scheduled (#{mid}). Recording will start automatically.")
+        logger.info(f"Scheduled manual meeting #{mid}: {subject}")
 
     def _record_now(self):
-        url = self._rec_url.get().strip()
         subject = self._rec_subject.get().strip() or "Meeting"
         dur = int(self._rec_dur.get()) * 60
-        if not url:
-            messagebox.showwarning("Missing URL", "Please enter a meeting URL.")
-            return
-        from src.meeting_recorder import record_meeting_now
-        if _loop:
-            asyncio.run_coroutine_threadsafe(record_meeting_now(url, subject, dur), _loop)
-            messagebox.showinfo("Recording", f"Recording started for {dur // 60} min.")
+        url = self._rec_url.get().strip() or ""
 
-    def _stop_recording(self):
-        from src.meeting_recorder import get_active_recorder
-        rec = get_active_recorder()
-        if rec and rec.is_recording:
-            rec.stop_recording()
-            messagebox.showinfo("Stopped", "Recording stopped.")
-            self._refresh_upcoming()
-        else:
-            messagebox.showinfo("No Recording", "No active recording.")
+        from src.meeting_recorder import MeetingRecorder, set_active_recorder
+
+        recorder = MeetingRecorder(meeting_url=url, subject=subject)
+        set_active_recorder(recorder)
+
+        if _loop:
+            asyncio.run_coroutine_threadsafe(
+                recorder.record_meeting(duration_seconds=dur), _loop
+            )
+        logger.info(f"Recording now: {subject} for {dur // 60} min")
+        self._update_recording_status()
 
     # ── Tab 3: Settings ───────────────────────────────────────────────
 
     def _build_settings_tab(self, notebook):
+        # Use a canvas + scrollbar so settings are scrollable
         frame = ttk.Frame(notebook)
         notebook.add(frame, text="  Settings  ")
 
+        canvas = tk.Canvas(frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
+        inner = ttk.Frame(canvas)
+
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
         # Audio devices
-        dev_frame = ttk.LabelFrame(frame, text="Audio Devices")
+        dev_frame = ttk.LabelFrame(inner, text="Audio Devices")
         dev_frame.pack(fill=tk.X, padx=10, pady=10)
 
         ttk.Label(dev_frame, text="Microphone:").grid(row=0, column=0, sticky="w", padx=5, pady=3)
-        self._mic_combo = ttk.Combobox(dev_frame, state="readonly", width=50)
+        self._mic_combo = ttk.Combobox(dev_frame, state="readonly", width=55)
         self._mic_combo.grid(row=0, column=1, padx=5, pady=3, sticky="ew")
 
         ttk.Label(dev_frame, text="Speaker:").grid(row=1, column=0, sticky="w", padx=5, pady=3)
-        self._spk_combo = ttk.Combobox(dev_frame, state="readonly", width=50)
+        self._spk_combo = ttk.Combobox(dev_frame, state="readonly", width=55)
         self._spk_combo.grid(row=1, column=1, padx=5, pady=3, sticky="ew")
 
         dev_btn_frame = ttk.Frame(dev_frame)
@@ -257,7 +319,7 @@ class DashboardApp:
         dev_frame.columnconfigure(1, weight=1)
 
         # Output path
-        path_frame = ttk.LabelFrame(frame, text="Recording Output")
+        path_frame = ttk.LabelFrame(inner, text="Recording Output")
         path_frame.pack(fill=tk.X, padx=10, pady=5)
 
         from src.config import get_recording_config
@@ -265,8 +327,27 @@ class DashboardApp:
         ttk.Entry(path_frame, textvariable=self._output_path_var, width=60).pack(side=tk.LEFT, padx=5, pady=5, fill=tk.X, expand=True)
         ttk.Button(path_frame, text="Browse", command=self._browse_output).pack(side=tk.LEFT, padx=5, pady=5)
 
+        # Notification settings
+        notif_frame = ttk.LabelFrame(inner, text="Notifications")
+        notif_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        from src.config import get_tray_config
+        tray_cfg = get_tray_config()
+
+        self._notif_enabled = tk.BooleanVar(value=tray_cfg.get("show_notifications", True))
+        ttk.Checkbutton(notif_frame, text="Show desktop notifications", variable=self._notif_enabled).pack(anchor="w", padx=5, pady=2)
+
+        self._notif_on_start = tk.BooleanVar(value=False)
+        ttk.Checkbutton(notif_frame, text="Notify when recording starts (may interrupt screenshare)", variable=self._notif_on_start).pack(anchor="w", padx=5, pady=2)
+
+        self._notif_on_stop = tk.BooleanVar(value=False)
+        ttk.Checkbutton(notif_frame, text="Notify when recording stops", variable=self._notif_on_stop).pack(anchor="w", padx=5, pady=2)
+
+        ttk.Label(notif_frame, text="All notifications are silent by default to avoid interrupting meetings.",
+                  foreground="gray").pack(anchor="w", padx=5, pady=(0, 5))
+
         # Save
-        ttk.Button(frame, text="Save Settings", command=self._save_settings).pack(padx=10, pady=10, anchor="w")
+        ttk.Button(inner, text="Save Settings", command=self._save_settings).pack(padx=10, pady=10, anchor="w")
 
         self._refresh_devices()
 
@@ -287,7 +368,6 @@ class DashboardApp:
         self._mic_combo.current(0)
         self._spk_combo.current(0)
 
-        # Select current device from config
         from src.config import get_device_config
         dev = get_device_config()
         if dev.get("mic_index") is not None:
@@ -314,7 +394,6 @@ class DashboardApp:
         from src.config import save_user_prefs
         prefs = {}
 
-        # Devices
         mic_sel = self._mic_combo.current()
         spk_sel = self._spk_combo.current()
         devices = {}
@@ -327,12 +406,15 @@ class DashboardApp:
         else:
             devices["speaker_index"] = None
         prefs["devices"] = devices
-
-        # Output path
         prefs["recording"] = {"output_dir": self._output_path_var.get()}
+        prefs["notifications"] = {
+            "enabled": self._notif_enabled.get(),
+            "on_start": self._notif_on_start.get(),
+            "on_stop": self._notif_on_stop.get(),
+        }
 
         save_user_prefs(prefs)
-        messagebox.showinfo("Saved", "Settings saved. Changes apply to next recording.")
+        logger.info("Settings saved from GUI")
 
     # ── Tab 4: History ────────────────────────────────────────────────
 
@@ -340,19 +422,27 @@ class DashboardApp:
         frame = ttk.Frame(notebook)
         notebook.add(frame, text="  History  ")
 
+        tree_frame = ttk.Frame(frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+
         cols = ("subject", "start", "duration", "status", "path")
-        self._history_tree = ttk.Treeview(frame, columns=cols, show="headings", height=14)
+        self._history_tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
         self._history_tree.heading("subject", text="Subject")
         self._history_tree.heading("start", text="Start Time")
         self._history_tree.heading("duration", text="Duration")
         self._history_tree.heading("status", text="Status")
         self._history_tree.heading("path", text="Recording Path")
-        self._history_tree.column("subject", width=200)
-        self._history_tree.column("start", width=160)
-        self._history_tree.column("duration", width=70)
-        self._history_tree.column("status", width=80)
-        self._history_tree.column("path", width=220)
-        self._history_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+        self._history_tree.column("subject", width=200, minwidth=120)
+        self._history_tree.column("start", width=160, minwidth=100)
+        self._history_tree.column("duration", width=70, minwidth=50)
+        self._history_tree.column("status", width=80, minwidth=60)
+        self._history_tree.column("path", width=250, minwidth=150)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._history_tree.yview)
+        self._history_tree.configure(yscrollcommand=scrollbar.set)
+        self._history_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
         self._history_tree.bind("<Double-1>", self._open_recording)
 
         btn_frame = ttk.Frame(frame)
@@ -413,23 +503,20 @@ _app: Optional[DashboardApp] = None
 def _gui_thread_main():
     global _root, _app
     _root = tk.Tk()
-    _root.withdraw()  # Start hidden
+    _root.withdraw()
     _app = DashboardApp(_root)
     _root.mainloop()
 
 
 def init_dashboard(event_loop: asyncio.AbstractEventLoop, scheduler=None):
-    """Initialize the dashboard in a background thread."""
     global _loop, _scheduler, _gui_thread
     _loop = event_loop
     _scheduler = scheduler
-
     _gui_thread = threading.Thread(target=_gui_thread_main, daemon=True)
     _gui_thread.start()
 
 
 def toggle_dashboard():
-    """Show/hide the dashboard window. Safe to call from any thread."""
     if _root and _app:
         _root.after(0, _app.toggle)
 

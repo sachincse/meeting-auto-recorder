@@ -73,16 +73,37 @@ class MeetingRecorder:
         mic = mic_index if mic_index is not None else dev_cfg.get("mic_index")
         spk = speaker_index if speaker_index is not None else dev_cfg.get("speaker_index")
 
-        self.recorder = RecordMyMeeting(
-            output_dir=self.output_dir,
-            mic_index=mic,
-            speaker_index=spk,
-            record_mic=cfg["record_mic"],
-            record_speaker=cfg["record_speaker"],
-            record_screen=cfg["record_screen"],
-            video_fps=cfg["video_fps"],
-            session_name=session_name,
-        )
+        logger.info(f"Initializing recorder: mic_index={mic}, speaker_index={spk}, "
+                    f"record_mic={cfg['record_mic']}, record_speaker={cfg['record_speaker']}, "
+                    f"record_screen={cfg['record_screen']}, fps={cfg['video_fps']}, "
+                    f"output={self.output_dir}")
+
+        try:
+            self.recorder = RecordMyMeeting(
+                output_dir=self.output_dir,
+                mic_index=mic,
+                speaker_index=spk,
+                record_mic=cfg["record_mic"],
+                record_speaker=cfg["record_speaker"],
+                record_screen=cfg["record_screen"],
+                video_fps=cfg["video_fps"],
+                session_name=session_name,
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize recorder: {e}", exc_info=True)
+            raise
+
+        # Log what the library actually configured (may differ from requested)
+        status = self.recorder.get_status()
+        logger.info(f"Recorder configured: mic={status['record_mic']}, "
+                    f"speaker={status['record_speaker']}, screen={status['record_screen']}")
+        if cfg["record_speaker"] and not status["record_speaker"]:
+            logger.warning("Speaker recording was requested but disabled by library "
+                          "(likely no working loopback device detected)")
+        if cfg["record_mic"] and not status["record_mic"]:
+            logger.warning("Mic recording was requested but disabled by library "
+                          "(likely no working microphone detected)")
+
         self._recording = False
 
     def open_meeting_in_browser(self):

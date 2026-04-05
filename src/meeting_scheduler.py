@@ -51,7 +51,7 @@ async def _record_meeting_task(meeting_id: int, meeting_url: str, subject: str, 
 
     try:
         from src.notifier import notify
-        notify("Recording Started", f"{subject}")
+        notify("Recording Started", f"{subject}", event="start")
 
         from src.tray_app import update_tray_icon
         update_tray_icon(recording=True)
@@ -65,16 +65,35 @@ async def _record_meeting_task(meeting_id: int, meeting_url: str, subject: str, 
 
         conn = await db.get_db()
         recording_path = result.get("session_folder", "") if result else ""
+
+        # Validate recording files were actually created
+        from pathlib import Path
+        if recording_path and Path(recording_path).is_dir():
+            files = list(Path(recording_path).iterdir())
+            file_names = [f.name for f in files]
+            file_sizes = {f.name: f.stat().st_size for f in files}
+            logger.info(f"Recording files for #{meeting_id}: {file_sizes}")
+
+            if not any(f.endswith('.wav') for f in file_names):
+                logger.warning(f"Meeting #{meeting_id}: No audio files produced!")
+            if not any(f.endswith('.mp4') for f in file_names):
+                logger.warning(f"Meeting #{meeting_id}: No screen recording produced!")
+            for fname, size in file_sizes.items():
+                if size == 0:
+                    logger.warning(f"Meeting #{meeting_id}: {fname} is empty (0 bytes)!")
+        else:
+            logger.warning(f"Meeting #{meeting_id}: Recording path missing or invalid: {recording_path}")
+
         await conn.execute(
             "UPDATE meetings SET status = 'recorded', recording_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (recording_path, meeting_id),
         )
         await conn.commit()
         await conn.close()
-        logger.info(f"Meeting #{meeting_id} recorded: {recording_path}")
+        logger.info(f"Meeting #{meeting_id} recorded successfully: {recording_path}")
 
     except Exception as e:
-        logger.error(f"Failed to record meeting #{meeting_id}: {e}")
+        logger.error(f"Failed to record meeting #{meeting_id}: {e}", exc_info=True)
         await _log_meeting_event(meeting_id, "failed")
     finally:
         set_active_recorder(None)
@@ -82,7 +101,7 @@ async def _record_meeting_task(meeting_id: int, meeting_url: str, subject: str, 
             from src.tray_app import update_tray_icon
             update_tray_icon(recording=False)
             from src.notifier import notify
-            notify("Recording Finished", f"{subject}")
+            notify("Recording Finished", f"{subject}", event="stop")
         except Exception:
             pass
 
