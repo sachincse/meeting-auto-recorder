@@ -48,8 +48,8 @@ devices:
   speaker_index: null         # null = auto-detect (WASAPI loopback on Windows)
 
 # --- System Tray & Hotkeys ---
-# Hotkey format uses pynput syntax: <ctrl>+<shift>+key
+# Hotkey format: ctrl+shift+key (uses 'keyboard' library on Windows, pynput on macOS)
 tray:
-  hotkey_toggle_dashboard: "<ctrl>+<shift>+m"    # Show/hide the GUI dashboard
-  hotkey_stop_recording: "<ctrl>+<shift>+s"      # Emergency stop current recording
-  show_notifications: true                        # Desktop notifications
+  hotkey_toggle_dashboard: "ctrl+shift+m"    # Show/hide the GUI dashboard
+  hotkey_stop_recording: "ctrl+shift+s"      # Emergency stop current recording
+  show_notifications: true                    # Desktop notifications

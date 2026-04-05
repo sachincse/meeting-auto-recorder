@@ -90,7 +90,7 @@ def get_tray_config() -> dict:
     cfg = load_config()
     tray = cfg.get("tray", {})
     return {
-        "hotkey_toggle_dashboard": tray.get("hotkey_toggle_dashboard", "<ctrl>+<shift>+m"),
-        "hotkey_stop_recording": tray.get("hotkey_stop_recording", "<ctrl>+<shift>+s"),
+        "hotkey_toggle_dashboard": tray.get("hotkey_toggle_dashboard", "ctrl+shift+m"),
+        "hotkey_stop_recording": tray.get("hotkey_stop_recording", "ctrl+shift+s"),
         "show_notifications": tray.get("show_notifications", True),
     }

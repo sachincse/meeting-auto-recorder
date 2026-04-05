@@ -214,29 +214,25 @@ class DashboardApp:
         form = ttk.LabelFrame(frame, text="Schedule a Recording")
         form.pack(fill=tk.X, padx=10, pady=10)
 
-        ttk.Label(form, text="Meeting URL (optional):").grid(row=0, column=0, sticky="w", padx=5, pady=3)
-        self._rec_url = ttk.Entry(form, width=50)
-        self._rec_url.grid(row=0, column=1, columnspan=2, padx=5, pady=3, sticky="ew")
-
-        ttk.Label(form, text="Subject:").grid(row=1, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(form, text="Subject:").grid(row=0, column=0, sticky="w", padx=5, pady=3)
         self._rec_subject = ttk.Entry(form, width=50)
         self._rec_subject.insert(0, "Meeting")
-        self._rec_subject.grid(row=1, column=1, columnspan=2, padx=5, pady=3, sticky="ew")
+        self._rec_subject.grid(row=0, column=1, columnspan=2, padx=5, pady=3, sticky="ew")
 
-        ttk.Label(form, text="Date (YYYY-MM-DD):").grid(row=2, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(form, text="Date (YYYY-MM-DD):").grid(row=1, column=0, sticky="w", padx=5, pady=3)
         self._rec_date = ttk.Entry(form, width=15)
         self._rec_date.insert(0, datetime.now().strftime("%Y-%m-%d"))
-        self._rec_date.grid(row=2, column=1, padx=5, pady=3, sticky="w")
+        self._rec_date.grid(row=1, column=1, padx=5, pady=3, sticky="w")
 
-        ttk.Label(form, text="Time (HH:MM):").grid(row=3, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(form, text="Time (HH:MM):").grid(row=2, column=0, sticky="w", padx=5, pady=3)
         self._rec_time = ttk.Entry(form, width=10)
         self._rec_time.insert(0, datetime.now().strftime("%H:%M"))
-        self._rec_time.grid(row=3, column=1, padx=5, pady=3, sticky="w")
+        self._rec_time.grid(row=2, column=1, padx=5, pady=3, sticky="w")
 
-        ttk.Label(form, text="Duration (min):").grid(row=4, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(form, text="Duration (min):").grid(row=3, column=0, sticky="w", padx=5, pady=3)
         self._rec_dur = ttk.Spinbox(form, from_=5, to=240, width=8, increment=5)
         self._rec_dur.set(45)
-        self._rec_dur.grid(row=4, column=1, padx=5, pady=3, sticky="w")
+        self._rec_dur.grid(row=3, column=1, padx=5, pady=3, sticky="w")
 
         form.columnconfigure(1, weight=1)
 
@@ -249,7 +245,6 @@ class DashboardApp:
         if not _scheduler:
             messagebox.showwarning("Not Running", "Scheduler not running.")
             return
-        url = self._rec_url.get().strip() or "manual"
         subject = self._rec_subject.get().strip() or "Meeting"
         try:
             dt_str = f"{self._rec_date.get().strip()} {self._rec_time.get().strip()}"
@@ -261,18 +256,17 @@ class DashboardApp:
         dur = int(self._rec_dur.get())
 
         from src.meeting_scheduler import schedule_manual_meeting
-        mid = _run_async(schedule_manual_meeting(_scheduler, url, subject, start, dur))
+        mid = _run_async(schedule_manual_meeting(_scheduler, "", subject, start, dur))
         self._refresh_upcoming()
         logger.info(f"Scheduled manual meeting #{mid}: {subject}")
 
     def _record_now(self):
         subject = self._rec_subject.get().strip() or "Meeting"
         dur = int(self._rec_dur.get()) * 60
-        url = self._rec_url.get().strip() or ""
 
         from src.meeting_recorder import MeetingRecorder, set_active_recorder
 
-        recorder = MeetingRecorder(meeting_url=url, subject=subject)
+        recorder = MeetingRecorder(meeting_url="", subject=subject)
         set_active_recorder(recorder)
 
         if _loop:

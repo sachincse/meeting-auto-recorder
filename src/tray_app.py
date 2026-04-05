@@ -117,35 +117,48 @@ def create_tray_menu() -> Menu:
 
 # ── Hotkeys ───────────────────────────────────────────────────────────
 
-def _setup_hotkeys():
-    """Register global hotkeys via pynput (cross-platform)."""
-    try:
-        from pynput import keyboard as pynput_kb
-    except ImportError:
-        logger.warning("'pynput' not installed — hotkeys disabled. pip install pynput")
-        return
+def _pynput_to_keyboard_fmt(hotkey: str) -> str:
+    """Convert pynput format '<ctrl>+<shift>+m' to keyboard format 'ctrl+shift+m'."""
+    return hotkey.replace("<", "").replace(">", "")
 
+
+def _setup_hotkeys():
+    """Register global hotkeys. Tries 'keyboard' lib first (Windows), falls back to pynput."""
     cfg = get_tray_config()
 
-    hotkeys = {}
-    try:
-        from src.gui_dashboard import toggle_dashboard
-        hotkeys[cfg["hotkey_toggle_dashboard"]] = toggle_dashboard
-    except Exception:
-        pass
-    try:
-        hotkeys[cfg["hotkey_stop_recording"]] = lambda: _on_stop_recording(None, None)
-    except Exception:
-        pass
+    from src.gui_dashboard import toggle_dashboard
+    dashboard_key = _pynput_to_keyboard_fmt(cfg["hotkey_toggle_dashboard"])
+    stop_key = _pynput_to_keyboard_fmt(cfg["hotkey_stop_recording"])
 
-    if hotkeys:
-        try:
-            listener = pynput_kb.GlobalHotKeys(hotkeys)
-            listener.daemon = True
-            listener.start()
-            logger.info(f"Hotkeys registered: {list(hotkeys.keys())}")
-        except Exception as e:
-            logger.warning(f"Failed to register hotkeys: {e}")
+    # Strategy 1: keyboard library (works best on Windows)
+    try:
+        import keyboard as kb_lib
+
+        kb_lib.add_hotkey(dashboard_key, toggle_dashboard)
+        kb_lib.add_hotkey(stop_key, lambda: _on_stop_recording(None, None))
+        logger.info(f"Hotkeys registered (keyboard lib): dashboard={dashboard_key}, stop={stop_key}")
+        return
+    except ImportError:
+        logger.debug("'keyboard' library not available, trying pynput")
+    except Exception as e:
+        logger.warning(f"keyboard lib hotkey registration failed: {e}")
+
+    # Strategy 2: pynput (cross-platform fallback)
+    try:
+        from pynput import keyboard as pynput_kb
+
+        hotkeys = {
+            cfg["hotkey_toggle_dashboard"]: toggle_dashboard,
+            cfg["hotkey_stop_recording"]: lambda: _on_stop_recording(None, None),
+        }
+        listener = pynput_kb.GlobalHotKeys(hotkeys)
+        listener.daemon = True
+        listener.start()
+        logger.info(f"Hotkeys registered (pynput): {list(hotkeys.keys())}")
+    except ImportError:
+        logger.warning("No hotkey library available. Install 'keyboard' or 'pynput'.")
+    except Exception as e:
+        logger.warning(f"pynput hotkey registration failed: {e}")
 
 
 # ── Entry Point ───────────────────────────────────────────────────────
