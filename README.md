@@ -1,19 +1,56 @@
 # Meeting Auto-Recorder
 
-Automatically detects meeting invitations from your email, schedules recordings, and captures mic + speaker + screen — all running silently in the background.
+Automatically detects meeting invitations from your email, schedules recordings, and captures mic + speaker + screen — all running silently in the background. No manual intervention needed.
 
-## Features
+## Current Status
 
-- **Email scanning** — Monitors Gmail (or any IMAP) for calendar invites with Zoom, Google Meet, Teams, Webex, GoToMeeting links
-- **Auto-recording** — Starts recording mic, system audio, and screen at meeting time
-- **GUI Dashboard** — Tkinter-based dashboard with meeting list, manual scheduling, device selector, and recording history
-- **System tray** — Runs hidden with tray icon; green = idle, red = recording
-- **Global hotkeys** — `Ctrl+Shift+M` to toggle dashboard, `Ctrl+Shift+S` to stop recording
-- **Auto-start on boot** — Windows (registry) and macOS (launchd) support
-- **Device hot-swap** — Automatically detects when you switch between headphones and speakers
-- **Manual device override** — Pick mic/speaker from the GUI if auto-detect fails
-- **Multiple email accounts** — Monitor personal + work email simultaneously
-- **Cross-platform** — Windows and macOS (macOS requires BlackHole for speaker capture)
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Email scanning (IMAP/ICS) | Done | Multi-account, Gmail App Passwords |
+| Meeting detection (Zoom/Meet/Teams/Webex) | Done | ICS parsing + URL regex |
+| Auto-recording (mic + speaker + screen) | Done | WASAPI loopback for speaker on Windows |
+| Audio device hot-swap | Done | Auto-detects headphone/speaker changes every 2s |
+| GUI Dashboard (Tkinter) | Done | 4 tabs: Upcoming, Record, Settings, History |
+| System tray (hidden) | Done | Green=idle, Red=recording |
+| Global hotkeys | Done | Ctrl+Shift+M (dashboard), Ctrl+Shift+S (stop) |
+| Auto-start on boot | Done | Windows (registry) + macOS (launchd) |
+| Cross-platform | Done | Windows fully tested, macOS supported (needs BlackHole for speaker) |
+| Desktop notifications | Done | Windows toast + macOS osascript |
+| Manual recording scheduler | Done | Enter URL + date/time from GUI |
+| Multiple email accounts | Done | Configure in config.yaml |
+| SQLite tracking | Done | Dedup, status tracking, recording paths |
+
+## How It Works
+
+```
+Your Email Inbox
+       │
+       ▼
+┌──────────────────────────┐
+│  IMAP Scanner             │  Runs every 15 min (configurable)
+│  Finds ICS calendar       │  Supports: Gmail, Outlook, Yahoo, any IMAP
+│  invites with meeting URLs │
+└───────────┬──────────────┘
+            ▼
+┌──────────────────────────┐
+│  APScheduler              │  Creates a job 1 min before each meeting
+│  Schedules recording at   │
+│  meeting start time       │
+└───────────┬──────────────┘
+            ▼
+┌──────────────────────────┐
+│  recordmymeeting library  │  At scheduled time, silently records:
+│  Captures:                │  - Microphone (PyAudio)
+│  - mic (your voice)       │  - Speaker audio (WASAPI loopback)
+│  - speaker (their voice)  │  - Screen (mss + OpenCV)
+│  - screen                 │
+└───────────┬──────────────┘
+            ▼
+    Session folder with:
+    microphone.wav, speaker.wav, merged.wav, screen.mp4
+```
+
+The user joins the meeting normally in their own browser/app. The recorder runs invisibly in the background — no browser pop-ups, no distractions.
 
 ## Quick Start
 
@@ -27,144 +64,197 @@ pip install -r requirements.txt
 
 ### 2. Configure
 
-Edit `data/config.yaml`:
+Copy and edit `data/config.yaml`:
 
 ```yaml
+# Email accounts to monitor
 email_accounts:
-  - name: "My Gmail"
+  - name: "Personal Gmail"
     imap_host: "imap.gmail.com"
     imap_port: 993
     imap_user: "you@gmail.com"
-    imap_pass: "xxxx xxxx xxxx xxxx"  # Gmail App Password
+    imap_pass: "xxxx xxxx xxxx xxxx"   # Gmail App Password
     imap_folder: "INBOX"
     enabled: true
 
+  - name: "Work Email"
+    imap_host: "imap.gmail.com"
+    imap_port: 993
+    imap_user: "you@company.com"
+    imap_pass: "xxxx xxxx xxxx xxxx"
+    imap_folder: "INBOX"
+    enabled: true
+
+# Recording settings
 recording:
   output_dir: "C:/Users/you/Documents/MeetingRecordings"
   record_mic: true
   record_speaker: true
   record_screen: true
+  video_fps: 10
+  auto_open_meeting: false   # Don't pop up browser — user joins on their own
+
+# How often to scan emails
+scheduler:
+  timezone: "Asia/Kolkata"
+  scan_cron: "*/15 * * * *"   # Every 15 minutes
+  max_emails_to_scan: 500
+
+# Audio device overrides (null = auto-detect)
+devices:
+  mic_index: null
+  speaker_index: null
+
+# Hotkeys
+tray:
+  hotkey_toggle_dashboard: "<ctrl>+<shift>+m"
+  hotkey_stop_recording: "<ctrl>+<shift>+s"
+  show_notifications: true
 ```
 
-For Gmail, generate an App Password at: https://myaccount.google.com/apppasswords
+For Gmail, generate an App Password at https://myaccount.google.com/apppasswords
 
 ### 3. Run
 
 ```bash
+# Recommended: run in system tray (hidden, persistent)
 python main.py --tray
+
+# Auto-start on every boot
+python main.py --install
 ```
 
-This starts the app **hidden in the system tray** (small green icon in the taskbar). It will:
-- Scan your configured email accounts every 15 minutes
-- Detect meeting invitations (ICS calendar invites with Zoom/Meet/Teams links)
-- Automatically start recording mic + speaker + screen 1 minute before each meeting
-- Open the meeting URL in your default browser so you can join normally
+## CLI Commands
 
-Press **Ctrl+Shift+M** to open the GUI dashboard at any time.
-
-### 4. Other Commands
-
-| Command | What it does |
+| Command | Description |
 |---------|-------------|
-| `python main.py --tray` | **Recommended.** Runs silently in system tray. Scans emails on schedule, auto-records meetings. Access the GUI dashboard with Ctrl+Shift+M or by clicking the tray icon. |
-| `python main.py --install` | Registers the app to **auto-start on boot** (Windows: adds to registry startup, macOS: creates launchd plist). After this, the recorder runs every time you turn on your computer — no manual launch needed. |
-| `python main.py --uninstall` | Removes auto-start. The app will no longer launch on boot. |
-| `python main.py --scan` | **One-shot mode.** Scans your emails once, finds upcoming meetings, schedules recordings, then waits. Useful for testing — you can see exactly which meetings were detected. Exits after all scheduled recordings are done. |
-| `python main.py --schedule` | Like `--scan` but **keeps running in the foreground** and re-scans every 15 minutes. Same as `--tray` but without the system tray icon (shows output in terminal). |
-| `python main.py --record URL` | **Record a meeting right now.** Opens the URL in your browser and immediately starts recording mic + speaker + screen. Add `--duration 3600` to stop after 1 hour (in seconds), or omit for indefinite recording (stop via Ctrl+C or Ctrl+Shift+S). |
-| `python main.py --status` | Prints a summary: auto-start status, email accounts configured, meeting stats (total/scheduled/recorded/failed), upcoming meetings, and hotkey bindings. Quick way to check everything is working. |
-
-## Windows Setup (Speaker Capture)
-
-Speaker/system audio capture uses WASAPI loopback via `pyaudiowpatch`. This works automatically on most Windows systems.
-
-If speaker capture fails, enable **Stereo Mix**:
-1. Right-click speaker icon in taskbar > **Sound settings**
-2. Scroll to **More sound settings** > **Recording** tab
-3. Right-click blank area > **Show Disabled Devices**
-4. Right-click **Stereo Mix** > **Enable**
-
-## macOS Setup (Speaker Capture)
-
-macOS does not support system audio loopback natively. Install [BlackHole](https://existential.audio/blackhole/):
-
-1. Download and install BlackHole 2ch
-2. Open **Audio MIDI Setup** (Spotlight > "Audio MIDI Setup")
-3. Click **+** > **Create Multi-Output Device**
-4. Check your speakers + BlackHole 2ch
-5. Set this Multi-Output Device as your system output
-6. In `data/config.yaml`, set the speaker device to BlackHole's index (find it in Settings tab)
+| `python main.py --tray` | Run hidden in system tray. Scans emails, auto-records meetings. Press Ctrl+Shift+M for dashboard. |
+| `python main.py --install` | Enable auto-start on boot (Windows registry / macOS launchd). Recorder starts every time you turn on your computer. |
+| `python main.py --uninstall` | Disable auto-start. |
+| `python main.py --scan` | One-shot: scan emails once, schedule recordings, wait for them, exit. Good for testing. |
+| `python main.py --schedule` | Continuous foreground mode with terminal output. Like --tray but visible. |
+| `python main.py --record URL` | Record a meeting right now. Starts recording immediately. Add `--duration 3600` for 1 hour. |
+| `python main.py --status` | Print status: auto-start, accounts, stats, upcoming meetings, hotkeys. |
 
 ## GUI Dashboard
 
-Press **Ctrl+Shift+M** (or click "Show Dashboard" in the tray menu) to open:
+Press **Ctrl+Shift+M** or click the tray icon to open:
 
-| Tab | Description |
+| Tab | What You See |
 |-----|-------------|
-| **Upcoming Meetings** | Detected meetings with status, scan button, stats |
-| **Record / Schedule** | Manual recording: enter URL, date/time, duration |
-| **Settings** | Audio device selector, recording output path |
-| **History** | All past meetings with recording paths (double-click to open) |
+| **Upcoming Meetings** | Detected meetings from email, their status (scheduled/recording/recorded/failed), meeting stats, "Scan Now" button |
+| **Record / Schedule** | Manually enter a meeting URL + date/time/duration to schedule a recording, or "Record Now" for immediate capture |
+| **Settings** | Dropdown to select mic/speaker devices, change recording output path, save preferences |
+| **History** | All past meetings with recording paths — double-click any row to open the recording folder |
 
-## Configuration
+## Platform-Specific Setup
 
-All settings live in `data/config.yaml`. GUI-changed settings (device overrides, output path) are stored separately in `data/user_prefs.yaml` so your config comments are preserved.
+### Windows (Speaker Capture)
 
-### Key Config Options
+Speaker audio capture uses WASAPI loopback via `pyaudiowpatch`. Works automatically on most systems.
 
-| Section | Key | Description |
-|---------|-----|-------------|
-| `email_accounts` | `imap_user/pass` | Email credentials (supports multiple accounts) |
-| `recording` | `output_dir` | Where recordings are saved |
-| `recording` | `record_mic/speaker/screen` | Toggle each capture source |
-| `scheduler` | `scan_cron` | How often to check email (default: every 15 min) |
-| `scheduler` | `max_emails_to_scan` | How many recent emails to scan per account |
-| `devices` | `mic_index/speaker_index` | Override auto-detected audio devices |
-| `tray` | `hotkey_toggle_dashboard` | Hotkey to show/hide dashboard |
+If speaker capture fails:
+1. Right-click speaker icon in taskbar > **Sound settings**
+2. **More sound settings** > **Recording** tab
+3. Right-click blank area > **Show Disabled Devices**
+4. Right-click **Stereo Mix** > **Enable**
+
+### macOS (Speaker Capture)
+
+macOS requires a virtual audio device for system audio capture:
+
+1. Install [BlackHole](https://existential.audio/blackhole/) (free, open-source)
+2. Open **Audio MIDI Setup** > **+** > **Create Multi-Output Device**
+3. Check your speakers + BlackHole 2ch
+4. Set Multi-Output Device as system output
+5. Set BlackHole device index in Settings tab
 
 ## Architecture
 
 ```
 meeting-auto-recorder/
-├── main.py                  # Entry point (--tray, --scan, --record, --install)
+├── main.py                  # Entry point (--tray, --scan, --record, --install, --status)
 ├── src/
-│   ├── config.py            # YAML config + user prefs loader
-│   ├── email_reader.py      # IMAP scanning, ICS parsing, multi-account
-│   ├── meeting_scheduler.py # APScheduler job management, DB tracking
-│   ├── meeting_recorder.py  # Wrapper around recordmymeeting library
-│   ├── gui_dashboard.py     # Tkinter GUI (4 tabs, threaded)
+│   ├── config.py            # YAML config + user_prefs.yaml loader
+│   ├── email_reader.py      # IMAP + ICS parsing, multi-account support
+│   ├── meeting_scheduler.py # APScheduler jobs, manual scheduling, pause/resume
+│   ├── meeting_recorder.py  # Wraps recordmymeeting library with config
+│   ├── gui_dashboard.py     # Tkinter GUI (4 tabs, runs in background thread)
 │   ├── tray_app.py          # System tray (pystray + pynput hotkeys)
-│   ├── autostart.py         # Windows registry / macOS launchd
+│   ├── autostart.py         # Windows registry + macOS launchd
 │   ├── notifier.py          # Cross-platform desktop notifications
-│   └── db.py                # SQLite schema and helpers
+│   └── db.py                # SQLite schema (meetings, scheduler_logs)
 ├── data/
-│   ├── config.yaml          # Main configuration
+│   ├── config.yaml          # Main configuration (hand-edited)
 │   ├── user_prefs.yaml      # GUI-writable overrides (auto-generated)
-│   └── meetings.db          # SQLite database (auto-created)
+│   ├── meetings.db          # SQLite database (auto-created)
+│   └── recordings/          # Default output directory
 └── requirements.txt
 ```
 
-## How It Works
+## Output Format
 
-1. **Email scan** — Connects via IMAP, finds ICS calendar attachments and meeting URLs in email bodies
-2. **Meeting detection** — Parses ICS for VEVENT entries, extracts start/end times and meeting URLs (Zoom, Meet, Teams, Webex)
-3. **Scheduling** — APScheduler creates a job 1 minute before each meeting start time
-4. **Recording** — At scheduled time, opens meeting URL in browser and starts `recordmymeeting` (mic via PyAudio, speaker via WASAPI loopback, screen via mss+OpenCV)
-5. **Device monitoring** — Every 2 seconds, checks if audio devices changed and switches automatically
-6. **Persistence** — All meetings tracked in SQLite to avoid duplicates
+Each recorded meeting creates a session folder:
 
-## CLI Reference
+```
+recordings/
+└── 20260405_160000_Technical_Discussion/
+    ├── microphone.wav    # Your voice
+    ├── speaker.wav       # Interviewer/other participants (WASAPI loopback)
+    ├── merged.wav        # Both channels mixed
+    └── screen.mp4        # Screen recording at 10fps
+```
 
-| Command | Description |
-|---------|-------------|
-| `python main.py --tray` | Run hidden in system tray (recommended for daily use) |
-| `python main.py --scan` | One-shot: scan emails, schedule recordings, wait, then exit |
-| `python main.py --schedule` | Continuous foreground mode (like --tray but with terminal output) |
-| `python main.py --record URL` | Record a specific meeting immediately |
-| `python main.py --record URL --duration 3600` | Record for exactly 1 hour (seconds) |
-| `python main.py --install` | Enable auto-start on system boot |
-| `python main.py --uninstall` | Disable auto-start |
-| `python main.py --status` | Print status summary and exit |
+**Key advantage**: Mic and speaker are saved as **separate files**, making it trivial to identify who said what — no speaker diarization needed.
+
+## Supported Meeting Platforms
+
+| Platform | Detection Method |
+|----------|-----------------|
+| Google Meet | ICS calendar invite + `meet.google.com` URL |
+| Zoom | ICS + `zoom.us/j/` URL |
+| Microsoft Teams | ICS + `teams.microsoft.com/l/meetup-join/` URL |
+| Webex | ICS + `webex.com` URL |
+| GoToMeeting | ICS + `gotomeeting.com` URL |
+
+## Tech Stack
+
+- **Python 3.11+**
+- **recordmymeeting** — Audio/screen capture library (mic via PyAudio, speaker via pyaudiowpatch WASAPI loopback, screen via mss+OpenCV)
+- **APScheduler** — Cron-based job scheduling
+- **pystray** — System tray icon
+- **pynput** — Cross-platform global hotkeys
+- **icalendar** — ICS calendar parsing
+- **aiosqlite** — Async SQLite
+- **Tkinter** — GUI dashboard (no extra deps)
+- **PyYAML** — Configuration
+
+## Roadmap to Public Release
+
+### What's Done
+- Core recording pipeline (email > detect > schedule > record)
+- GUI dashboard with all CRUD operations
+- System tray with hotkeys
+- Auto-start on boot
+- Cross-platform support (Windows + macOS)
+- SQLite tracking and deduplication
+- Multiple email account support
+
+### What's Needed for Public Release
+- [ ] **PyPI package** — `pip install meeting-auto-recorder` with entry point
+- [ ] **Installer** — Windows MSI/NSIS installer, macOS .dmg
+- [ ] **First-run wizard** — GUI setup for email credentials on first launch
+- [ ] **OAuth for Gmail** — Replace App Passwords with OAuth2 flow
+- [ ] **Encryption** — Encrypt stored credentials at rest
+- [ ] **Tests** — Unit tests for email parsing, scheduler, device detection
+- [ ] **CI/CD** — GitHub Actions for testing + release builds
+- [ ] **Documentation site** — MkDocs or similar
+- [ ] **Linux support** — PulseAudio/PipeWire for speaker capture
+
+## Related Projects
+
+- **[interview-intelligence](https://github.com/sachincse/interview-intelligence)** — Analyzes recordings from this tool: transcription, Q&A extraction, answer rating, prep material generation
+- **[recordmymeeting](https://github.com/sachincse/recordmymeeting)** — The underlying recording library
 
 ## License
 
