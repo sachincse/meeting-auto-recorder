@@ -58,7 +58,7 @@ def get_recording_config() -> dict:
         "record_speaker": rec.get("record_speaker", True),
         "record_screen": rec.get("record_screen", True),
         "video_fps": rec.get("video_fps", 10),
-        "auto_open_meeting": rec.get("auto_open_meeting", True),
+        "auto_open_meeting": rec.get("auto_open_meeting", False),
     }
 
 

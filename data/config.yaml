@@ -31,7 +31,7 @@ recording:
   record_speaker: true        # Record system/speaker audio
   record_screen: true         # Record screen
   video_fps: 10               # Screen recording frame rate
-  auto_open_meeting: true     # Open meeting URL in browser when recording starts
+  auto_open_meeting: false    # Don't open meeting URL — user joins on their own
 
 # --- Scheduler ---
 scheduler:
