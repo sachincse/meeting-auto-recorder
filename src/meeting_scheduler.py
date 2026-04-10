@@ -195,6 +195,20 @@ async def scan_emails_and_schedule(scheduler: AsyncIOScheduler) -> int:
 
     logger.info("Scanning emails for meeting invitations...")
     sched_cfg = get_scheduler_config()
+
+    # Clean up: mark past "scheduled" meetings as "missed"
+    try:
+        conn = await db.get_db()
+        await conn.execute(
+            """UPDATE meetings SET status = 'missed', updated_at = CURRENT_TIMESTAMP
+               WHERE status = 'scheduled'
+                 AND start_time < datetime('now', '-30 minutes')""",
+        )
+        await conn.commit()
+        await conn.close()
+    except Exception as e:
+        logger.debug(f"Cleanup failed: {e}")
+
     meetings = fetch_meeting_invites()
 
     if not meetings:
