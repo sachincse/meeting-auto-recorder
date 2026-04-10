@@ -65,21 +65,33 @@ class SaarthiClient:
             return False
 
     def upload_recording(
-        self, files: dict[str, Path], title: str = "Recording"
+        self, files: dict[str, Path], title: str = "Recording",
+        company: str = "", round_name: str = "",
     ) -> dict:
-        """Upload recording files. files = {"microphone.wav": Path, "speaker.wav": Path}"""
+        """Upload recording files with optional company/round metadata.
+
+        files = {"microphone.wav": Path, "speaker.wav": Path, ...}
+        """
         if not self.token:
             raise Exception("Not connected to Interview Saarthi")
 
         multipart = []
         for fname, fpath in files.items():
-            multipart.append(("files", (fname, fpath.read_bytes(), "audio/wav")))
+            # Determine mime type based on extension
+            mime = "audio/wav" if fname.endswith(".wav") else "video/mp4"
+            multipart.append(("files", (fname, fpath.read_bytes(), mime)))
+
+        data = {"title": title}
+        if company:
+            data["company"] = company
+        if round_name:
+            data["round"] = round_name
 
         r = httpx.post(
             f"{self.server_url}/api/recordings/upload",
             headers={"Authorization": f"Bearer {self.token}"},
             files=multipart,
-            data={"title": title},
+            data=data,
             timeout=300,
         )
         if r.status_code != 200:

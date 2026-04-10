@@ -2,14 +2,16 @@
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
 from src import db
-from src.config import get_scheduler_config
+from src.config import get_scheduler_config, get_recording_config, load_user_prefs
 from src.email_reader import fetch_meeting_invites
+from src.interview_detector import detect_interview_info
 from src.meeting_recorder import MeetingRecorder, set_active_recorder
 
 logger = logging.getLogger(__name__)
@@ -58,8 +60,34 @@ async def _record_meeting_task(meeting_id: int, meeting_url: str, subject: str, 
     except Exception:
         pass
 
+    # Detect company/round for smart folder naming
+    # Fetch organizer from DB for better detection
+    organizer = ""
     try:
-        recorder = MeetingRecorder(meeting_url=meeting_url, subject=subject)
+        conn = await db.get_db()
+        cursor = await conn.execute("SELECT organizer FROM meetings WHERE id = ?", (meeting_id,))
+        row = await cursor.fetchone()
+        if row:
+            organizer = row[0] or ""
+        await conn.close()
+    except Exception:
+        pass
+
+    info = detect_interview_info(subject, organizer)
+    logger.info(f"Detected: company={info['company']}, round={info['round']}")
+
+    # Build structured output directory
+    prefs = load_user_prefs()
+    auto_organize = prefs.get("auto_organize_folders", True)
+    rec_cfg = get_recording_config()
+    if auto_organize:
+        output_dir = os.path.join(rec_cfg["output_dir"], info["folder_name"])
+    else:
+        output_dir = rec_cfg["output_dir"]
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        recorder = MeetingRecorder(meeting_url=meeting_url, subject=subject, output_dir=output_dir)
         set_active_recorder(recorder)
         result = await recorder.record_meeting(duration_seconds=duration_seconds)
 
@@ -92,34 +120,56 @@ async def _record_meeting_task(meeting_id: int, meeting_url: str, subject: str, 
         await conn.close()
         logger.info(f"Meeting #{meeting_id} recorded successfully: {recording_path}")
 
-        # After recording completes successfully, auto-upload to Saarthi
+        # After recording completes, handle upload based on user preference
+        upload_mode = prefs.get("saarthi_upload_mode", "approve")
+
         try:
             from src.saarthi_client import SaarthiClient
             client = SaarthiClient()
-            if client.is_connected and client.auto_upload:
+
+            if upload_mode == "auto" and client.is_connected:
+                # Upload immediately
                 from pathlib import Path as _Path
                 recording_dir = _Path(recording_path)
-                files = {}
+                upload_files = {}
                 for fname in ['microphone.wav', 'speaker.wav', 'screen.mp4']:
                     fpath = recording_dir / fname
                     if fpath.exists() and fpath.stat().st_size > 0:
-                        files[fname] = fpath
+                        upload_files[fname] = fpath
 
-                if files:
-                    result = client.upload_recording(files, title=subject)
-                    saarthi_id = result.get('interview_id')
+                if upload_files:
+                    upload_result = client.upload_recording(
+                        upload_files, title=subject,
+                        company=info["company"], round_name=info["round"],
+                    )
+                    saarthi_id = upload_result.get('interview_id')
                     logger.info(f"Auto-uploaded to Saarthi: interview #{saarthi_id}")
 
                     # Update DB with Saarthi interview ID
                     conn = await db.get_db()
                     await conn.execute(
-                        "UPDATE meetings SET recording_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        "UPDATE meetings SET status = 'uploaded', recording_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                         (f"saarthi:{saarthi_id}", meeting_id),
                     )
                     await conn.commit()
                     await conn.close()
                 else:
                     logger.warning(f"No non-empty recording files found for Saarthi upload in {recording_path}")
+
+            elif upload_mode == "approve":
+                # Mark as pending_upload in DB, show in GUI for approval
+                conn = await db.get_db()
+                await conn.execute(
+                    "UPDATE meetings SET status = 'pending_upload' WHERE id = ?",
+                    (meeting_id,),
+                )
+                await conn.commit()
+                await conn.close()
+                logger.info(f"Recording ready for approval: {subject}")
+
+            elif upload_mode == "off":
+                logger.info(f"Upload mode is off, recording saved locally only: {subject}")
+
         except Exception as e:
             logger.warning(f"Auto-upload to Saarthi failed (recording still saved locally): {e}")
 
@@ -308,6 +358,8 @@ async def get_meeting_stats() -> dict:
         "total": "SELECT COUNT(*) FROM meetings",
         "scheduled": "SELECT COUNT(*) FROM meetings WHERE status = 'scheduled'",
         "recorded": "SELECT COUNT(*) FROM meetings WHERE status = 'recorded'",
+        "pending_upload": "SELECT COUNT(*) FROM meetings WHERE status = 'pending_upload'",
+        "uploaded": "SELECT COUNT(*) FROM meetings WHERE status = 'uploaded'",
         "failed": "SELECT COUNT(*) FROM meetings WHERE status = 'failed'",
     }.items():
         cursor = await conn.execute(query)

@@ -138,12 +138,34 @@ class DashboardApp:
         self._refresh_history()
 
     def _try_saarthi_upload(self, session_folder: str, subject: str):
-        """Attempt auto-upload to Interview Saarthi in a background thread."""
+        """Attempt auto-upload to Interview Saarthi in a background thread, respecting upload mode."""
+        from src.config import load_user_prefs
+        prefs = load_user_prefs()
+        upload_mode = prefs.get("saarthi_upload_mode", "approve")
+
+        if upload_mode == "off":
+            logger.info("Upload mode is off, recording saved locally only")
+            return
+
+        from src.interview_detector import detect_interview_info
+        info = detect_interview_info(subject)
+
+        if upload_mode == "approve":
+            # Mark as pending — user will approve from History tab
+            logger.info(f"Recording pending approval for upload: {subject}")
+            if self.root:
+                self.root.after(0, lambda: self._status_label.config(
+                    text=f"Recording saved — pending upload approval",
+                    foreground="#d97706",
+                ))
+            return
+
+        # upload_mode == "auto"
         def _upload():
             try:
                 from src.saarthi_client import SaarthiClient
                 client = SaarthiClient()
-                if not client.is_connected or not client.auto_upload:
+                if not client.is_connected:
                     return
 
                 from pathlib import Path
@@ -157,7 +179,10 @@ class DashboardApp:
                 if not files:
                     return
 
-                result = client.upload_recording(files, title=subject)
+                result = client.upload_recording(
+                    files, title=subject,
+                    company=info["company"], round_name=info["round"],
+                )
                 saarthi_id = result.get('interview_id')
                 logger.info(f"GUI auto-uploaded to Saarthi: interview #{saarthi_id}")
 
@@ -255,6 +280,40 @@ class DashboardApp:
             # Verify token in background
             self.root.after(1000, self._saarthi_verify_async)
 
+        # ── Upload Settings ──
+        upload_frame = ttk.LabelFrame(frame, text="Upload Settings", padding=12)
+        upload_frame.pack(fill=tk.X, pady=(0, 10))
+
+        from src.config import load_user_prefs as _load_prefs
+        _uprefs = _load_prefs()
+        current_mode = _uprefs.get("saarthi_upload_mode", "approve")
+
+        self._upload_mode_var = tk.StringVar(value=current_mode)
+
+        ttk.Label(upload_frame, text="Upload Mode:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Radiobutton(
+            upload_frame, text="Auto \u2014 Send all recordings to Interview Saarthi automatically",
+            variable=self._upload_mode_var, value="auto",
+        ).pack(anchor="w", padx=(10, 0), pady=1)
+        ttk.Radiobutton(
+            upload_frame, text="Approve Each \u2014 Ask before uploading each recording",
+            variable=self._upload_mode_var, value="approve",
+        ).pack(anchor="w", padx=(10, 0), pady=1)
+        ttk.Radiobutton(
+            upload_frame, text="Local Only \u2014 Keep recordings on this computer only",
+            variable=self._upload_mode_var, value="off",
+        ).pack(anchor="w", padx=(10, 0), pady=1)
+
+        self._auto_organize_var = tk.BooleanVar(value=_uprefs.get("auto_organize_folders", True))
+        ttk.Checkbutton(
+            upload_frame, text="Auto-organize folders by company/round",
+            variable=self._auto_organize_var,
+        ).pack(anchor="w", padx=(10, 0), pady=(8, 0))
+
+        ttk.Button(upload_frame, text="Save Upload Settings", command=self._save_upload_settings).pack(
+            anchor="w", pady=(10, 0)
+        )
+
     def _saarthi_connect(self):
         """Handle Connect button click — runs login in a thread."""
         server = self._saarthi_server_var.get().strip().rstrip("/")
@@ -301,6 +360,16 @@ class DashboardApp:
                 ))
 
         threading.Thread(target=_do_verify, daemon=True).start()
+
+    def _save_upload_settings(self):
+        """Save upload mode and auto-organize preference to user_prefs.yaml."""
+        from src.config import save_user_prefs
+        save_user_prefs({
+            "saarthi_upload_mode": self._upload_mode_var.get(),
+            "auto_organize_folders": self._auto_organize_var.get(),
+        })
+        logger.info(f"Upload settings saved: mode={self._upload_mode_var.get()}, "
+                     f"auto_organize={self._auto_organize_var.get()}")
 
     # ── Tab 1: Upcoming Meetings ──────────────────────────────────────
 
@@ -701,6 +770,12 @@ class DashboardApp:
         frame = ttk.Frame(notebook, padding=5)
         notebook.add(frame, text="  History  ")
 
+        # ── Pending uploads section ──
+        self._pending_frame = ttk.LabelFrame(frame, text="Pending Uploads", padding=8)
+        # Will be shown/hidden dynamically in _refresh_history
+        self._pending_inner = ttk.Frame(self._pending_frame)
+        self._pending_inner.pack(fill=tk.X)
+
         tree_frame = ttk.Frame(frame)
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -710,25 +785,55 @@ class DashboardApp:
             self._history_tree.heading(col, text=col.replace("path", "Recording Path").title())
             self._history_tree.column(col, width=w, minwidth=50)
 
+        # Tag for pending_upload rows
+        self._history_tree.tag_configure("pending", foreground="#d97706", font=("Segoe UI", 9, "bold"))
+
         vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._history_tree.yview)
         self._history_tree.configure(yscrollcommand=vsb.set)
         self._history_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self._history_tree.bind("<Double-1>", self._open_recording)
 
-        ttk.Label(frame, text="Double-click a row to open the recording folder.",
+        # Bottom bar with action buttons
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=(6, 0))
+        ttk.Button(btn_frame, text="Upload Selected", command=self._upload_selected).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_frame, text="Skip Upload", command=self._skip_upload_selected).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_frame, text="Refresh", command=self._refresh_history).pack(side=tk.RIGHT)
+
+        ttk.Label(frame, text="Double-click a row to open the recording folder. Select pending items to Upload or Skip.",
                   foreground="gray", font=("Segoe UI", 8)).pack(anchor="w", pady=(4, 0))
 
     def _refresh_history(self):
         from src.meeting_scheduler import get_meeting_history
         history = _run_async(get_meeting_history(100)) or []
         self._history_tree.delete(*self._history_tree.get_children())
+
+        pending_count = 0
         for m in history:
             dur = f"{(m.get('duration_seconds', 0) or 0) // 60} min"
+            status = m.get("status", "?")
+            tags = ("pending",) if status == "pending_upload" else ()
             self._history_tree.insert("", tk.END, values=(
                 m.get("subject", "?"), m.get("start_time", "?"),
-                dur, m.get("status", "?"), m.get("recording_path", ""),
-            ))
+                dur, status, m.get("recording_path", ""),
+            ), tags=tags)
+            if status == "pending_upload":
+                pending_count += 1
+
+        # Show/hide pending uploads banner
+        if pending_count > 0:
+            self._pending_frame.pack(fill=tk.X, pady=(0, 6), before=self._pending_frame.master.winfo_children()[1])
+            # Update pending inner text
+            for w in self._pending_inner.winfo_children():
+                w.destroy()
+            ttk.Label(
+                self._pending_inner,
+                text=f"{pending_count} recording(s) waiting for upload approval. Select and click 'Upload Selected'.",
+                foreground="#d97706", font=("Segoe UI", 9),
+            ).pack(anchor="w")
+        else:
+            self._pending_frame.pack_forget()
 
     def _open_recording(self, event):
         sel = self._history_tree.selection()
@@ -738,6 +843,121 @@ class DashboardApp:
         path = values[4] if len(values) > 4 else ""
         if path and os.path.isdir(path):
             _open_path(path)
+
+    def _upload_selected(self):
+        """Upload selected pending_upload recordings to Saarthi."""
+        sel = self._history_tree.selection()
+        if not sel:
+            return
+        for item_id in sel:
+            values = self._history_tree.item(item_id, "values")
+            tags = self._history_tree.item(item_id, "tags")
+            if "pending" not in tags:
+                continue
+            subject = values[0]
+            recording_path = values[4] if len(values) > 4 else ""
+            if not recording_path or not os.path.isdir(recording_path):
+                continue
+            self._do_upload_recording(recording_path, subject)
+        self.root.after(2000, self._refresh_history)
+
+    def _skip_upload_selected(self):
+        """Mark selected pending_upload recordings as recorded (skip upload)."""
+        sel = self._history_tree.selection()
+        if not sel:
+            return
+        for item_id in sel:
+            values = self._history_tree.item(item_id, "values")
+            tags = self._history_tree.item(item_id, "tags")
+            if "pending" not in tags:
+                continue
+            recording_path = values[4] if len(values) > 4 else ""
+            # Update DB status from pending_upload to recorded
+            def _mark_skipped(path=recording_path):
+                try:
+                    from src import db as _db
+                    import asyncio as _aio
+
+                    async def _update():
+                        conn = await _db.get_db()
+                        await conn.execute(
+                            "UPDATE meetings SET status = 'recorded' WHERE recording_path = ? AND status = 'pending_upload'",
+                            (path,),
+                        )
+                        await conn.commit()
+                        await conn.close()
+
+                    if _loop and _loop.is_running():
+                        _aio.run_coroutine_threadsafe(_update(), _loop).result(timeout=10)
+                except Exception as e:
+                    logger.warning(f"Failed to skip upload: {e}")
+
+            threading.Thread(target=_mark_skipped, daemon=True).start()
+
+        self.root.after(1000, self._refresh_history)
+
+    def _do_upload_recording(self, recording_path: str, subject: str):
+        """Upload a single recording to Saarthi in a background thread."""
+        from src.interview_detector import detect_interview_info
+        info = detect_interview_info(subject)
+
+        def _upload():
+            try:
+                from src.saarthi_client import SaarthiClient
+                client = SaarthiClient()
+                if not client.is_connected:
+                    logger.warning("Cannot upload: not connected to Saarthi")
+                    return
+
+                from pathlib import Path
+                recording_dir = Path(recording_path)
+                files = {}
+                for fname in ['microphone.wav', 'speaker.wav', 'screen.mp4']:
+                    fpath = recording_dir / fname
+                    if fpath.exists() and fpath.stat().st_size > 0:
+                        files[fname] = fpath
+
+                if not files:
+                    logger.warning(f"No files to upload in {recording_path}")
+                    return
+
+                result = client.upload_recording(
+                    files, title=subject,
+                    company=info["company"], round_name=info["round"],
+                )
+                saarthi_id = result.get('interview_id')
+                logger.info(f"Uploaded to Saarthi: interview #{saarthi_id}")
+
+                # Update DB
+                import asyncio as _aio
+                from src import db as _db
+
+                async def _update_db():
+                    conn = await _db.get_db()
+                    await conn.execute(
+                        "UPDATE meetings SET status = 'uploaded', recording_path = ? WHERE recording_path = ?",
+                        (f"saarthi:{saarthi_id}", recording_path),
+                    )
+                    await conn.commit()
+                    await conn.close()
+
+                if _loop and _loop.is_running():
+                    _aio.run_coroutine_threadsafe(_update_db(), _loop).result(timeout=15)
+
+                if self.root:
+                    self.root.after(0, lambda: self._status_label.config(
+                        text=f"Uploaded to Saarthi (interview #{saarthi_id})",
+                        foreground="#2563eb",
+                    ))
+            except Exception as e:
+                logger.warning(f"Upload failed for {subject}: {e}")
+                if self.root:
+                    self.root.after(0, lambda: self._status_label.config(
+                        text=f"Upload failed: {e}",
+                        foreground="#d97706",
+                    ))
+
+        threading.Thread(target=_upload, daemon=True).start()
 
     # ── Window ────────────────────────────────────────────────────────
 
