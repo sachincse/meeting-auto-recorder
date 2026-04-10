@@ -92,6 +92,37 @@ async def _record_meeting_task(meeting_id: int, meeting_url: str, subject: str, 
         await conn.close()
         logger.info(f"Meeting #{meeting_id} recorded successfully: {recording_path}")
 
+        # After recording completes successfully, auto-upload to Saarthi
+        try:
+            from src.saarthi_client import SaarthiClient
+            client = SaarthiClient()
+            if client.is_connected and client.auto_upload:
+                from pathlib import Path as _Path
+                recording_dir = _Path(recording_path)
+                files = {}
+                for fname in ['microphone.wav', 'speaker.wav', 'screen.mp4']:
+                    fpath = recording_dir / fname
+                    if fpath.exists() and fpath.stat().st_size > 0:
+                        files[fname] = fpath
+
+                if files:
+                    result = client.upload_recording(files, title=subject)
+                    saarthi_id = result.get('interview_id')
+                    logger.info(f"Auto-uploaded to Saarthi: interview #{saarthi_id}")
+
+                    # Update DB with Saarthi interview ID
+                    conn = await db.get_db()
+                    await conn.execute(
+                        "UPDATE meetings SET recording_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (f"saarthi:{saarthi_id}", meeting_id),
+                    )
+                    await conn.commit()
+                    await conn.close()
+                else:
+                    logger.warning(f"No non-empty recording files found for Saarthi upload in {recording_path}")
+        except Exception as e:
+            logger.warning(f"Auto-upload to Saarthi failed (recording still saved locally): {e}")
+
     except Exception as e:
         logger.error(f"Failed to record meeting #{meeting_id}: {e}", exc_info=True)
         await _log_meeting_event(meeting_id, "failed")

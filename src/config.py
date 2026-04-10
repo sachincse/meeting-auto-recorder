@@ -88,9 +88,28 @@ def get_scheduler_config() -> dict:
 
 def get_tray_config() -> dict:
     cfg = load_config()
+    prefs = load_user_prefs()
     tray = cfg.get("tray", {})
+    hotkeys_prefs = prefs.get("hotkeys", {})
     return {
-        "hotkey_toggle_dashboard": tray.get("hotkey_toggle_dashboard", "ctrl+shift+m"),
-        "hotkey_stop_recording": tray.get("hotkey_stop_recording", "ctrl+shift+s"),
+        "hotkey_toggle_dashboard": hotkeys_prefs.get(
+            "dashboard", tray.get("hotkey_toggle_dashboard", "ctrl+shift+m")
+        ),
+        "hotkey_stop_recording": hotkeys_prefs.get(
+            "stop_recording", tray.get("hotkey_stop_recording", "ctrl+shift+s")
+        ),
         "show_notifications": tray.get("show_notifications", True),
+    }
+
+
+def get_saarthi_config() -> dict:
+    """Return Saarthi connection settings from user_prefs."""
+    prefs = load_user_prefs()
+    return {
+        "server": prefs.get(
+            "saarthi_server",
+            "https://interview-intelligence-production-7e43.up.railway.app",
+        ),
+        "token": prefs.get("saarthi_token", ""),
+        "username": prefs.get("saarthi_username", ""),
     }

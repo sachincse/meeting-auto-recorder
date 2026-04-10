@@ -1,0 +1,9 @@
+devices:
+  mic_index: null
+  speaker_index: null
+notifications:
+  enabled: false
+  on_start: false
+  on_stop: false
+recording:
+  output_dir: C:/Users/sachi/Documents/MeetingRecordings

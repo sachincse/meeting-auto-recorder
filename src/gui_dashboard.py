@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from tkinter import ttk, filedialog
 from typing import Optional
 
+import numpy as np
+import pyaudio
+
 logger = logging.getLogger(__name__)
 
 _root: Optional[tk.Tk] = None
@@ -76,6 +79,7 @@ class DashboardApp:
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 10))
         notebook.bind("<<NotebookTabChanged>>", self._on_tab_change)
 
+        self._build_account_tab(notebook)
         self._build_upcoming_tab(notebook)
         self._build_schedule_tab(notebook)
         self._build_settings_tab(notebook)
@@ -116,6 +120,7 @@ class DashboardApp:
         rec = get_active_recorder()
         if rec and rec.is_recording:
             result = rec.stop_recording()
+            subject = rec.subject
             set_active_recorder(None)
             logger.info(f"Recording stopped: {result.get('session_folder', '?')}")
             try:
@@ -123,8 +128,55 @@ class DashboardApp:
                 update_tray_icon(recording=False)
             except Exception:
                 pass
+
+            # Auto-upload to Saarthi if connected
+            session_folder = result.get('session_folder', '')
+            if session_folder:
+                self._try_saarthi_upload(session_folder, subject)
+
         self._update_status_ui()
         self._refresh_history()
+
+    def _try_saarthi_upload(self, session_folder: str, subject: str):
+        """Attempt auto-upload to Interview Saarthi in a background thread."""
+        def _upload():
+            try:
+                from src.saarthi_client import SaarthiClient
+                client = SaarthiClient()
+                if not client.is_connected or not client.auto_upload:
+                    return
+
+                from pathlib import Path
+                recording_dir = Path(session_folder)
+                files = {}
+                for fname in ['microphone.wav', 'speaker.wav', 'screen.mp4']:
+                    fpath = recording_dir / fname
+                    if fpath.exists() and fpath.stat().st_size > 0:
+                        files[fname] = fpath
+
+                if not files:
+                    return
+
+                result = client.upload_recording(files, title=subject)
+                saarthi_id = result.get('interview_id')
+                logger.info(f"GUI auto-uploaded to Saarthi: interview #{saarthi_id}")
+
+                # Show success in status bar (thread-safe via root.after)
+                if self.root:
+                    self.root.after(0, lambda: self._status_label.config(
+                        text=f"Uploaded to Saarthi (interview #{saarthi_id})",
+                        foreground="#2563eb",
+                    ))
+            except Exception as e:
+                logger.warning(f"GUI auto-upload to Saarthi failed: {e}")
+                if self.root:
+                    self.root.after(0, lambda: self._status_label.config(
+                        text=f"Saarthi upload failed: {e}",
+                        foreground="#d97706",
+                    ))
+
+        thread = threading.Thread(target=_upload, daemon=True)
+        thread.start()
 
     def _poll_status(self):
         self._update_status_ui()
@@ -148,6 +200,107 @@ class DashboardApp:
             self.root.after(100, self._refresh_upcoming)
         elif "History" in tab_name:
             self.root.after(100, self._refresh_history)
+
+    # ── Tab: Account ──────────────────────────────────────────────────
+
+    def _build_account_tab(self, notebook):
+        frame = ttk.Frame(notebook, padding=10)
+        notebook.add(frame, text="  Account  ")
+
+        # ── Login Section ──
+        login_frame = ttk.LabelFrame(frame, text="Connect to Interview Saarthi", padding=12)
+        login_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(login_frame, text="Server URL:").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        self._saarthi_server_var = tk.StringVar()
+        server_entry = ttk.Entry(login_frame, textvariable=self._saarthi_server_var, width=55)
+        server_entry.grid(row=0, column=1, columnspan=2, sticky="ew", pady=4)
+
+        ttk.Label(login_frame, text="Username:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+        self._saarthi_user_var = tk.StringVar()
+        ttk.Entry(login_frame, textvariable=self._saarthi_user_var, width=30).grid(
+            row=1, column=1, sticky="ew", pady=4
+        )
+
+        ttk.Label(login_frame, text="Password:").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
+        self._saarthi_pass_var = tk.StringVar()
+        ttk.Entry(login_frame, textvariable=self._saarthi_pass_var, show="*", width=30).grid(
+            row=2, column=1, sticky="ew", pady=4
+        )
+
+        ttk.Button(login_frame, text="Connect", command=self._saarthi_connect).grid(
+            row=3, column=1, sticky="w", pady=(8, 4)
+        )
+
+        login_frame.columnconfigure(1, weight=1)
+
+        # ── Connection status ──
+        status_frame = ttk.LabelFrame(frame, text="Connection Status", padding=12)
+        status_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self._saarthi_status_label = ttk.Label(status_frame, text="Not connected", foreground="red",
+                                                font=("Segoe UI", 10, "bold"))
+        self._saarthi_status_label.pack(anchor="w")
+
+        # Load existing prefs
+        from src.config import get_saarthi_config
+        saarthi_cfg = get_saarthi_config()
+        self._saarthi_server_var.set(saarthi_cfg["server"])
+        if saarthi_cfg["username"]:
+            self._saarthi_user_var.set(saarthi_cfg["username"])
+
+        # Check connection on startup
+        if saarthi_cfg["token"]:
+            self._saarthi_status_label.config(text=f"Connected as {saarthi_cfg['username']}", foreground="green")
+            # Verify token in background
+            self.root.after(1000, self._saarthi_verify_async)
+
+    def _saarthi_connect(self):
+        """Handle Connect button click — runs login in a thread."""
+        server = self._saarthi_server_var.get().strip().rstrip("/")
+        username = self._saarthi_user_var.get().strip()
+        password = self._saarthi_pass_var.get().strip()
+        if not username or not password:
+            self._saarthi_status_label.config(text="Enter username and password", foreground="red")
+            return
+
+        self._saarthi_status_label.config(text="Connecting...", foreground="orange")
+
+        def _do_login():
+            try:
+                from src.saarthi_client import SaarthiClient
+                client = SaarthiClient()
+                client.server_url = server
+                data = client.login(username, password)
+                self.root.after(0, lambda: self._saarthi_status_label.config(
+                    text=f"Connected as {data.get('username', username)}", foreground="green"
+                ))
+                self.root.after(0, lambda: self._saarthi_pass_var.set(""))
+                logger.info(f"Saarthi login successful: {data.get('username', username)}")
+            except Exception as e:
+                self.root.after(0, lambda: self._saarthi_status_label.config(
+                    text=f"Login failed: {e}", foreground="red"
+                ))
+                logger.warning(f"Saarthi login failed: {e}")
+
+        threading.Thread(target=_do_login, daemon=True).start()
+
+    def _saarthi_verify_async(self):
+        """Verify the stored Saarthi token in a background thread."""
+        def _do_verify():
+            try:
+                from src.saarthi_client import SaarthiClient
+                client = SaarthiClient()
+                if not client.verify():
+                    self.root.after(0, lambda: self._saarthi_status_label.config(
+                        text="Not connected (token expired)", foreground="red"
+                    ))
+            except Exception:
+                self.root.after(0, lambda: self._saarthi_status_label.config(
+                    text="Not connected (verification failed)", foreground="red"
+                ))
+
+        threading.Thread(target=_do_verify, daemon=True).start()
 
     # ── Tab 1: Upcoming Meetings ──────────────────────────────────────
 
@@ -297,6 +450,25 @@ class DashboardApp:
         ttk.Button(dbtn, text="Refresh Devices", command=self._refresh_devices).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(dbtn, text="Reset to Auto-Detect", command=self._reset_devices).pack(side=tk.LEFT)
 
+        # ── Audio Tests ──
+        testf = ttk.LabelFrame(inner, text="Audio Device Tests", padding=10)
+        testf.pack(fill=tk.X, pady=(0, 10))
+
+        mic_test_row = ttk.Frame(testf)
+        mic_test_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(mic_test_row, text="Test Microphone", command=self._test_mic).pack(side=tk.LEFT, padx=(0, 10))
+        self._mic_test_label = ttk.Label(mic_test_row, text="", font=("Segoe UI", 9))
+        self._mic_test_label.pack(side=tk.LEFT)
+
+        spk_test_row = ttk.Frame(testf)
+        spk_test_row.pack(fill=tk.X)
+        ttk.Button(spk_test_row, text="Test Speaker Capture", command=self._test_speaker).pack(side=tk.LEFT, padx=(0, 10))
+        self._spk_test_label = ttk.Label(spk_test_row, text="", font=("Segoe UI", 9))
+        self._spk_test_label.pack(side=tk.LEFT)
+
+        ttk.Label(testf, text="Mic test records 3 seconds. Speaker test plays a beep and captures via WASAPI loopback.",
+                  foreground="gray", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
+
         # ── Output Path ──
         pathf = ttk.LabelFrame(inner, text="Recording Output", padding=10)
         pathf.pack(fill=tk.X, pady=(0, 10))
@@ -329,6 +501,26 @@ class DashboardApp:
 
         ttk.Label(notf, text="Start/stop notifications are disabled by default so they don't appear during meetings.",
                   foreground="gray", font=("Segoe UI", 8)).pack(anchor="w", pady=(4, 0))
+
+        # ── Hotkeys ──
+        hkf = ttk.LabelFrame(inner, text="Custom Hotkeys", padding=10)
+        hkf.pack(fill=tk.X, pady=(0, 10))
+
+        from src.config import get_tray_config
+        tray_cfg = get_tray_config()
+
+        ttk.Label(hkf, text="Dashboard Hotkey:").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
+        self._hotkey_dashboard_var = tk.StringVar(value=tray_cfg["hotkey_toggle_dashboard"])
+        ttk.Entry(hkf, textvariable=self._hotkey_dashboard_var, width=25).grid(row=0, column=1, sticky="w", pady=3)
+
+        ttk.Label(hkf, text="Stop Recording Hotkey:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
+        self._hotkey_stop_var = tk.StringVar(value=tray_cfg["hotkey_stop_recording"])
+        ttk.Entry(hkf, textvariable=self._hotkey_stop_var, width=25).grid(row=1, column=1, sticky="w", pady=3)
+
+        ttk.Label(hkf, text="Use format like ctrl+shift+m. Changes take effect after restart.",
+                  foreground="gray", font=("Segoe UI", 8)).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        hkf.columnconfigure(1, weight=1)
 
         # ── Save ──
         ttk.Button(inner, text="Save Settings", command=self._save_settings).pack(anchor="w", pady=(6, 0))
@@ -363,6 +555,118 @@ class DashboardApp:
         self._mic_combo.current(0)
         self._spk_combo.current(0)
 
+    def _test_mic(self):
+        """Test the selected microphone by recording 3 seconds of audio."""
+        self._mic_test_label.config(text="Recording...", foreground="orange")
+
+        def _run():
+            try:
+                p = pyaudio.PyAudio()
+                mic_sel = self._mic_combo.current()
+                device_index = None
+                if mic_sel > 0:
+                    device_index = self._mic_devices[mic_sel - 1]["index"]
+
+                kwargs = dict(
+                    format=pyaudio.paInt16, channels=1, rate=44100,
+                    input=True, frames_per_buffer=1024,
+                )
+                if device_index is not None:
+                    kwargs["input_device_index"] = device_index
+
+                stream = p.open(**kwargs)
+                frames = []
+                for _ in range(int(44100 / 1024 * 3)):
+                    frames.append(stream.read(1024, exception_on_overflow=False))
+                stream.stop_stream()
+                stream.close()
+                p.terminate()
+
+                audio = np.frombuffer(b"".join(frames), dtype=np.int16)
+                rms = int(np.sqrt(np.mean(audio.astype(float) ** 2)))
+                if rms > 50:
+                    self.root.after(0, lambda: self._mic_test_label.config(
+                        text=f"Mic OK (RMS: {rms})", foreground="green"))
+                else:
+                    self.root.after(0, lambda: self._mic_test_label.config(
+                        text=f"Mic silent (RMS: {rms})", foreground="orange"))
+            except Exception as e:
+                self.root.after(0, lambda: self._mic_test_label.config(
+                    text=f"FAILED: {e}", foreground="red"))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _test_speaker(self):
+        """Test speaker capture via WASAPI loopback — plays a beep, records 3 seconds."""
+        self._spk_test_label.config(text="Playing beep & capturing...", foreground="orange")
+
+        def _run():
+            try:
+                import winsound
+
+                p = pyaudio.PyAudio()
+                spk_sel = self._spk_combo.current()
+                device_index = None
+                if spk_sel > 0:
+                    device_index = self._spk_devices[spk_sel - 1]["index"]
+
+                # Find a WASAPI loopback device
+                if device_index is None:
+                    # Auto-detect: find default WASAPI loopback
+                    wasapi_info = None
+                    for i in range(p.get_device_count()):
+                        info = p.get_device_info_by_index(i)
+                        if info.get("isLoopbackDevice", False):
+                            wasapi_info = info
+                            device_index = i
+                            break
+                    if device_index is None:
+                        p.terminate()
+                        self.root.after(0, lambda: self._spk_test_label.config(
+                            text="FAILED: No loopback device found", foreground="red"))
+                        return
+                    rate = int(wasapi_info["defaultSampleRate"])
+                    channels = int(wasapi_info["maxInputChannels"])
+                else:
+                    info = p.get_device_info_by_index(device_index)
+                    rate = int(info["defaultSampleRate"])
+                    channels = int(info["maxInputChannels"])
+
+                stream = p.open(
+                    format=pyaudio.paInt16, channels=channels, rate=rate,
+                    input=True, frames_per_buffer=1024,
+                    input_device_index=device_index,
+                )
+
+                # Play a beep in a sub-thread so we can capture simultaneously
+                def _beep():
+                    try:
+                        winsound.Beep(1000, 500)
+                    except Exception:
+                        pass
+                threading.Thread(target=_beep, daemon=True).start()
+
+                frames = []
+                for _ in range(int(rate / 1024 * 3)):
+                    frames.append(stream.read(1024, exception_on_overflow=False))
+                stream.stop_stream()
+                stream.close()
+                p.terminate()
+
+                audio = np.frombuffer(b"".join(frames), dtype=np.int16)
+                rms = int(np.sqrt(np.mean(audio.astype(float) ** 2)))
+                if rms > 50:
+                    self.root.after(0, lambda: self._spk_test_label.config(
+                        text=f"Speaker OK (RMS: {rms})", foreground="green"))
+                else:
+                    self.root.after(0, lambda: self._spk_test_label.config(
+                        text=f"Speaker silent (RMS: {rms})", foreground="orange"))
+            except Exception as e:
+                self.root.after(0, lambda: self._spk_test_label.config(
+                    text=f"FAILED: {e}", foreground="red"))
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def _browse_output(self):
         path = filedialog.askdirectory(initialdir=self._output_var.get())
         if path:
@@ -382,6 +686,10 @@ class DashboardApp:
                 "enabled": self._notif_enabled.get(),
                 "on_start": self._notif_on_start.get(),
                 "on_stop": self._notif_on_stop.get(),
+            },
+            "hotkeys": {
+                "dashboard": self._hotkey_dashboard_var.get().strip(),
+                "stop_recording": self._hotkey_stop_var.get().strip(),
             },
         }
         save_user_prefs(prefs)
