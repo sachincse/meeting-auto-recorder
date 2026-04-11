@@ -106,3 +106,38 @@ class SaarthiClient:
             timeout=10,
         )
         return r.json()
+
+    def sync_meetings(self, meetings: list[dict]) -> dict:
+        """Upload local meeting data to Saarthi for cross-session persistence."""
+        if not self.token:
+            return {}
+        try:
+            r = httpx.post(
+                f"{self.server_url}/api/user/meetings",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={"meetings": meetings},
+                timeout=30,
+            )
+            if r.status_code == 200:
+                return r.json()
+            logger.warning("Meeting sync failed: %s", r.text[:200])
+        except Exception as e:
+            logger.debug("Meeting sync request failed: %s", e)
+        return {}
+
+    def load_meetings(self) -> list[dict]:
+        """Load meeting data from Saarthi (persisted across sessions)."""
+        if not self.token:
+            return []
+        try:
+            r = httpx.get(
+                f"{self.server_url}/api/user/meetings",
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=30,
+            )
+            if r.status_code == 200:
+                return r.json().get("meetings", [])
+            logger.warning("Meeting load failed: %s", r.text[:200])
+        except Exception as e:
+            logger.debug("Meeting load request failed: %s", e)
+        return []

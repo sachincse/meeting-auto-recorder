@@ -292,6 +292,25 @@ async def scan_emails_and_schedule(scheduler: AsyncIOScheduler) -> int:
         scheduled_count += 1
 
     logger.info(f"Scheduled {scheduled_count} new meeting recordings")
+
+    # Sync local meeting data to Saarthi web for cross-session persistence
+    try:
+        from src.saarthi_client import SaarthiClient
+        client = SaarthiClient()
+        if client.is_connected:
+            conn = await db.get_db()
+            cursor = await conn.execute(
+                "SELECT * FROM meetings ORDER BY start_time DESC LIMIT 50"
+            )
+            rows = await cursor.fetchall()
+            await conn.close()
+            sync_data = [dict(r) for r in rows]
+            result = client.sync_meetings(sync_data)
+            synced = result.get("synced", 0)
+            logger.info(f"Synced {synced} meetings to Saarthi")
+    except Exception as e:
+        logger.debug(f"Meeting sync to Saarthi failed: {e}")
+
     return scheduled_count
 
 

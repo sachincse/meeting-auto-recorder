@@ -479,11 +479,17 @@ class DashboardApp:
 
                 logger.info(f"Saarthi login successful: {logged_user}")
 
+                # Load meetings from Saarthi and populate local DB
+                self._load_meetings_from_saarthi(client)
+
                 # Switch to connected view on main thread
                 self.root.after(0, lambda: self._build_connected_view(
                     self._account_container, logged_user))
                 # Re-pack upload frame to keep it below
                 self.root.after(50, lambda: self._repack_upload_frame())
+                # Refresh upcoming/history views with synced data
+                self.root.after(200, self._refresh_upcoming)
+                self.root.after(300, self._refresh_history)
             except Exception as e:
                 self.root.after(0, lambda: self._saarthi_status_label.config(
                     text=f"Login failed: {e}", foreground=DANGER,
@@ -529,6 +535,64 @@ class DashboardApp:
         self._saarthi_status_label.config(
             text="Session expired — please sign in again", foreground=WARNING,
         )
+
+    def _load_meetings_from_saarthi(self, client):
+        """Load meetings from Saarthi web and insert missing ones into local DB.
+
+        Called synchronously from the login thread -- uses asyncio to talk to local SQLite.
+        """
+        try:
+            meetings = client.load_meetings()
+            if not meetings:
+                return
+
+            import asyncio as _aio
+
+            async def _insert():
+                from src import db as _db
+                conn = await _db.get_db()
+                inserted = 0
+                for m in meetings:
+                    meeting_url = m.get("meeting_url", "")
+                    start_time = m.get("start_time", "")
+                    if not meeting_url or not start_time:
+                        continue
+                    # Skip if already exists locally
+                    cursor = await conn.execute(
+                        "SELECT id FROM meetings WHERE meeting_url = ? AND start_time = ?",
+                        (meeting_url, start_time),
+                    )
+                    if await cursor.fetchone():
+                        continue
+                    await conn.execute(
+                        """INSERT INTO meetings
+                           (subject, meeting_url, start_time, end_time,
+                            duration_seconds, organizer, source, status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            m.get("subject", ""),
+                            meeting_url,
+                            start_time,
+                            m.get("end_time"),
+                            m.get("duration_seconds", 0),
+                            m.get("organizer", ""),
+                            m.get("source", "synced"),
+                            m.get("status", "scheduled"),
+                        ),
+                    )
+                    inserted += 1
+                await conn.commit()
+                await conn.close()
+                return inserted
+
+            if _loop and _loop.is_running():
+                future = _aio.run_coroutine_threadsafe(_insert(), _loop)
+                count = future.result(timeout=10)
+            else:
+                count = _aio.run(_insert())
+            logger.info(f"Loaded {count} meetings from Saarthi into local DB")
+        except Exception as e:
+            logger.debug(f"Failed to load meetings from Saarthi: {e}")
 
     def _save_upload_settings(self):
         """Save upload mode and auto-organize preference to user_prefs.yaml."""

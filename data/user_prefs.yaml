@@ -2,7 +2,7 @@ devices:
   mic_index: 3
   speaker_index: null
 hotkeys:
-  dashboard: ctrl+shift+k
+  dashboard: ctrl+shift+m
   stop_recording: ctrl+shift+s
 notifications:
   enabled: false
@@ -10,7 +10,7 @@ notifications:
   on_stop: false
 recording:
   output_dir: C:/Users/sachi/Documents/MeetingRecordings
-saarthi_plan: ''
+saarthi_plan: free
 saarthi_server: https://interview-intelligence-production-7e43.up.railway.app
-saarthi_token: ''
-saarthi_username: ''
+saarthi_token: eyJ1aWQiOjF9.adp3Dg.8QMFVKUZQSjSUvCDuzVrl-iEjvA
+saarthi_username: sachin
