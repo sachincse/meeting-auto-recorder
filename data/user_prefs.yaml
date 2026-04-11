@@ -8,5 +8,5 @@ notifications:
 recording:
   output_dir: C:/Users/sachi/Documents/MeetingRecordings
 saarthi_server: https://interview-intelligence-production-7e43.up.railway.app
-saarthi_token: eyJ1aWQiOjF9.adlR8w.JbD4TCfa0u0YK0WE8ql_k0XqN2o
+saarthi_token: eyJ1aWQiOjF9.adljbg.Ldhc-YXC2ElGr0PWmy45SEflXns
 saarthi_username: sachin
