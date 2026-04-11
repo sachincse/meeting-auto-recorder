@@ -1,6 +1,9 @@
 devices:
-  mic_index: null
+  mic_index: 3
   speaker_index: null
+hotkeys:
+  dashboard: ctrl+shift+k
+  stop_recording: ctrl+shift+s
 notifications:
   enabled: false
   on_start: false

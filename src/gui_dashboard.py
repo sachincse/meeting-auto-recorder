@@ -37,13 +37,29 @@ RECORDING_RED = "#dc2626"
 
 
 def _run_async(coro):
+    """Run async coro from GUI thread. Returns result or None. NON-BLOCKING with short timeout."""
     if not _loop or not _loop.is_running():
         return None
     future = asyncio.run_coroutine_threadsafe(coro, _loop)
     try:
-        return future.result(timeout=15)
+        return future.result(timeout=3)  # Short timeout to prevent GUI freeze
     except Exception:
         return None
+
+
+def _run_async_bg(coro, callback=None):
+    """Run async coro in background, call callback(result) on GUI thread when done."""
+    def _worker():
+        if not _loop or not _loop.is_running():
+            return
+        future = asyncio.run_coroutine_threadsafe(coro, _loop)
+        try:
+            result = future.result(timeout=30)
+        except Exception:
+            result = None
+        if callback and _root:
+            _root.after(0, lambda: callback(result))
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def _open_path(path: str):
@@ -76,6 +92,12 @@ class DashboardApp:
             style="Status.TLabel", foreground=SUCCESS,
         )
         self._status_label.pack(side=tk.LEFT)
+
+        # Restart button
+        ttk.Button(
+            top, text="Restart",
+            command=self._restart_app,
+        ).pack(side=tk.RIGHT, padx=(4, 0))
 
         self._action_btn = ttk.Button(
             top, text="Start Recording",
@@ -559,26 +581,35 @@ class DashboardApp:
 
     def _refresh_upcoming(self):
         from src.meeting_scheduler import get_upcoming_meetings, get_meeting_stats
-        meetings = _run_async(get_upcoming_meetings()) or []
-        stats = _run_async(get_meeting_stats()) or {}
-        self._stats_label.config(
-            text=f"Total: {stats.get('total', 0)}    Scheduled: {stats.get('scheduled', 0)}    "
-                 f"Recorded: {stats.get('recorded', 0)}    Failed: {stats.get('failed', 0)}"
-        )
-        self._upcoming_tree.delete(*self._upcoming_tree.get_children())
-        for m in meetings:
-            dur = f"{(m.get('duration_seconds', 0) or 0) // 60} min"
-            self._upcoming_tree.insert("", tk.END, values=(
-                m.get("subject", "?"), m.get("start_time", "?"),
-                dur, m.get("status", "?"), m.get("source", "?"),
-            ))
+
+        def _update(data):
+            if not data:
+                return
+            meetings, stats = data
+            self._stats_label.config(
+                text=f"Total: {stats.get('total', 0)}    Scheduled: {stats.get('scheduled', 0)}    "
+                     f"Recorded: {stats.get('recorded', 0)}    Failed: {stats.get('failed', 0)}"
+            )
+            self._upcoming_tree.delete(*self._upcoming_tree.get_children())
+            for m in (meetings or []):
+                dur = f"{(m.get('duration_seconds', 0) or 0) // 60} min"
+                self._upcoming_tree.insert("", tk.END, values=(
+                    m.get("subject", "?"), m.get("start_time", "?"),
+                    dur, m.get("status", "?"), m.get("source", "?"),
+                ))
+
+        async def _fetch():
+            m = await get_upcoming_meetings()
+            s = await get_meeting_stats()
+            return (m, s)
+
+        _run_async_bg(_fetch(), _update)
 
     def _scan_now(self):
         if not _scheduler:
             return
         from src.meeting_scheduler import scan_emails_and_schedule
-        _run_async(scan_emails_and_schedule(_scheduler))
-        self._refresh_upcoming()
+        _run_async_bg(scan_emails_and_schedule(_scheduler), lambda _: self._refresh_upcoming())
 
     def _auto_refresh(self):
         self._refresh_upcoming()
@@ -994,6 +1025,22 @@ class DashboardApp:
         save_user_prefs(prefs)
         logger.info("Settings saved from GUI")
 
+        # Re-register hotkeys immediately (no restart needed)
+        try:
+            import keyboard as kb_lib
+            kb_lib.unhook_all()
+            from src.gui_dashboard import toggle_dashboard
+            from src.tray_app import _on_stop_recording
+            dk = prefs["hotkeys"]["dashboard"]
+            sk = prefs["hotkeys"]["stop_recording"]
+            if dk:
+                kb_lib.add_hotkey(dk, toggle_dashboard)
+            if sk:
+                kb_lib.add_hotkey(sk, lambda: _on_stop_recording(None, None))
+            logger.info(f"Hotkeys reloaded: dashboard={dk}, stop={sk}")
+        except Exception as e:
+            logger.warning(f"Could not reload hotkeys: {e}")
+
     # ── Tab: History ──────────────────────────────────────────────────
 
     def _build_history_tab(self, notebook):
@@ -1044,7 +1091,14 @@ class DashboardApp:
 
     def _refresh_history(self):
         from src.meeting_scheduler import get_meeting_history
-        history = _run_async(get_meeting_history(100)) or []
+
+        def _update(history):
+            history = history or []
+            self._do_refresh_history(history)
+
+        _run_async_bg(get_meeting_history(100), _update)
+
+    def _do_refresh_history(self, history):
         self._history_tree.delete(*self._history_tree.get_children())
 
         pending_count = 0
@@ -1201,6 +1255,12 @@ class DashboardApp:
         threading.Thread(target=_upload, daemon=True).start()
 
     # ── Window ────────────────────────────────────────────────────────
+
+    def _restart_app(self):
+        """Restart the entire application."""
+        import sys
+        self.root.destroy()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def _on_close(self):
         self.root.withdraw()
