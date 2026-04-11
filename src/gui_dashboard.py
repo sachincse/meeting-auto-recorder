@@ -106,6 +106,8 @@ class DashboardApp:
         )
         self._status_label.pack(side=tk.LEFT)
 
+        ttk.Button(top, text="Restart", command=self._restart_app).pack(side=tk.RIGHT, padx=(4, 0))
+
         self._action_btn = ttk.Button(
             top, text="Start Recording",
             style="Primary.TButton", command=self._toggle_recording,
