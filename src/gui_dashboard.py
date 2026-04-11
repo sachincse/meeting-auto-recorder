@@ -336,7 +336,7 @@ class DashboardApp:
         self._login_status.grid(row=5, column=0, sticky="w", pady=(0, 8))
 
         ttk.Label(self._login_frame,
-                  text="Don't have an account? Register at interviewsaarthi.com",
+                  text="Don't have an account? Register at interview-intelligence-production-7e43.up.railway.app",
                   foreground=TEXT_SEC, background=CARD_BG, font=("Segoe UI", 8)).grid(
             row=6, column=0, sticky="w")
 
@@ -1018,7 +1018,7 @@ class DashboardApp:
                   font=("Segoe UI", 10), foreground=TEXT).pack(anchor="w", pady=(0, 24))
 
         link_btn = ttk.Button(frame, text="Open Interview Saarthi website",
-                              command=lambda: _open_path("https://interviewsaarthi.com"))
+                              command=lambda: _open_path("https://interview-intelligence-production-7e43.up.railway.app"))
         link_btn.pack(anchor="w", pady=(0, 12))
 
         btn_row = ttk.Frame(frame)
@@ -1027,7 +1027,7 @@ class DashboardApp:
         ttk.Button(btn_row, text="Restart", command=self._restart_app).pack(
             side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_row, text="Check for Updates",
-                   command=lambda: _open_path("https://interviewsaarthi.com/download")).pack(
+                   command=lambda: _open_path("https://interview-intelligence-production-7e43.up.railway.app/download")).pack(
             side=tk.LEFT)
 
     # ── Window management ─────────────────────────────────────────
