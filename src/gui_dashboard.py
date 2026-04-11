@@ -821,33 +821,69 @@ class DashboardApp:
         self._spk_combo.current(0)
 
     def _test_mic(self):
-        self._mic_test_label.config(text="Recording 3s...", foreground="orange")
+        self._mic_test_label.config(text="Testing microphone...", foreground="orange")
 
         def _run():
             try:
                 import pyaudio
                 import numpy as np
                 p = pyaudio.PyAudio()
-                kwargs = dict(format=pyaudio.paInt16, channels=1, rate=44100,
-                              input=True, frames_per_buffer=1024)
                 mic_sel = self._mic_combo.current()
+
                 if mic_sel > 0:
-                    kwargs["input_device_index"] = self._mic_devices[mic_sel - 1]["index"]
-                stream = p.open(**kwargs)
-                frames = []
-                for _ in range(int(44100 / 1024 * 3)):
-                    frames.append(stream.read(1024, exception_on_overflow=False))
-                stream.stop_stream()
-                stream.close()
+                    # User selected a specific device — test only that one
+                    devices_to_try = [self._mic_devices[mic_sel - 1]["index"]]
+                else:
+                    # Auto-detect: scan ALL MME input devices, find the one with audio
+                    devices_to_try = []
+                    for i in range(p.get_device_count()):
+                        info = p.get_device_info_by_index(i)
+                        api = p.get_host_api_info_by_index(info['hostApi'])['name']
+                        if info['maxInputChannels'] > 0 and 'MME' in api:
+                            devices_to_try.append(i)
+
+                best_rms = 0
+                best_device = None
+                best_name = ""
+
+                for dev_idx in devices_to_try:
+                    try:
+                        info = p.get_device_info_by_index(dev_idx)
+                        stream = p.open(format=pyaudio.paInt16, channels=1, rate=44100,
+                                       input=True, input_device_index=dev_idx, frames_per_buffer=1024)
+                        frames = []
+                        for _ in range(int(44100 / 1024 * 1)):  # 1 second per device
+                            frames.append(stream.read(1024, exception_on_overflow=False))
+                        stream.stop_stream()
+                        stream.close()
+                        audio = np.frombuffer(b''.join(frames), dtype=np.int16)
+                        rms = int(np.sqrt(np.mean(audio.astype(float)**2)))
+                        if rms > best_rms:
+                            best_rms = rms
+                            best_device = dev_idx
+                            best_name = info['name']
+                    except Exception:
+                        continue
+
                 p.terminate()
-                audio = np.frombuffer(b''.join(frames), dtype=np.int16)
-                rms = int(np.sqrt(np.mean(audio.astype(float)**2)))
-                if rms > 50:
+
+                if best_rms > 10:
+                    msg = f"Mic working! [{best_device}] {best_name} (RMS: {best_rms})"
+                    self.root.after(0, lambda: self._mic_test_label.config(text=msg, foreground="#2d8a4e"))
+                    # Auto-select the working device in dropdown
+                    if mic_sel == 0 and best_device is not None:
+                        for i, d in enumerate(self._mic_devices):
+                            if d["index"] == best_device:
+                                self.root.after(0, lambda idx=i+1: self._mic_combo.current(idx))
+                                break
+                elif len(devices_to_try) > 0:
                     self.root.after(0, lambda: self._mic_test_label.config(
-                        text=f"Mic working! Audio detected (RMS: {rms})", foreground="#2d8a4e"))
+                        text="All mics silent — speak while testing, or select a device manually",
+                        foreground="orange"))
                 else:
                     self.root.after(0, lambda: self._mic_test_label.config(
-                        text=f"Mic connected (RMS: {rms}). Speak louder to verify.", foreground="#2d8a4e"))
+                        text="No microphone devices found", foreground="red"))
+
             except Exception as e:
                 err = str(e)[:60]
                 self.root.after(0, lambda: self._mic_test_label.config(
