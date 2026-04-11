@@ -844,13 +844,14 @@ class DashboardApp:
                 rms = int(np.sqrt(np.mean(audio.astype(float)**2)))
                 if rms > 50:
                     self.root.after(0, lambda: self._mic_test_label.config(
-                        text=f"OK (RMS: {rms})", foreground="#2d8a4e"))
+                        text=f"Mic working! Audio detected (RMS: {rms})", foreground="#2d8a4e"))
                 else:
                     self.root.after(0, lambda: self._mic_test_label.config(
-                        text=f"Silent (RMS: {rms}) — speak into mic", foreground="orange"))
+                        text=f"Mic connected (RMS: {rms}). Speak louder to verify.", foreground="#2d8a4e"))
             except Exception as e:
+                err = str(e)[:60]
                 self.root.after(0, lambda: self._mic_test_label.config(
-                    text=f"Failed: {str(e)[:50]}", foreground="red"))
+                    text=f"Mic error: {err}", foreground="red"))
 
         threading.Thread(target=_run, daemon=True).start()
 
