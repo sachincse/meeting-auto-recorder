@@ -187,6 +187,83 @@ async def _record_meeting_task(meeting_id: int, meeting_url: str, subject: str, 
             pass
 
 
+async def rehydrate_scheduled_meetings(scheduler: AsyncIOScheduler) -> int:
+    """Re-register DateTrigger jobs for future meetings already in the DB.
+
+    APScheduler uses an in-memory job store by default, so any pending
+    DateTrigger jobs are lost when the tray process exits (reboot, crash,
+    logout). Without rehydration, a meeting scanned in a previous session
+    would never fire — it is still in the DB, so ``scan_emails_and_schedule``
+    treats it as a duplicate and skips scheduling.
+
+    Call this once at tray startup, BEFORE the first ``scan_emails_and_schedule``.
+    It will re-add a DateTrigger for every ``status='scheduled'`` row whose
+    ``start_time`` is still in the future (or within the last 30 minutes),
+    and mark older rows as ``missed``.
+    """
+    now = datetime.now(timezone.utc)
+    sched_cfg = get_scheduler_config()
+    pre_buffer = sched_cfg["pre_meeting_buffer_min"]
+    default_duration = sched_cfg["default_duration_min"]
+
+    conn = await db.get_db()
+    cursor = await conn.execute(
+        """SELECT id, subject, meeting_url, start_time, duration_seconds
+           FROM meetings
+           WHERE status = 'scheduled'
+             AND meeting_url IS NOT NULL AND meeting_url != ''"""
+    )
+    rows = await cursor.fetchall()
+    await conn.close()
+
+    rehydrated = 0
+    missed = 0
+    for r in rows:
+        meeting_id, subject, meeting_url, start_time_str, duration_seconds = (
+            r[0], r[1], r[2], r[3], r[4],
+        )
+        duration_seconds = duration_seconds or (default_duration * 60)
+
+        try:
+            start_time = datetime.fromisoformat(start_time_str)
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+        except Exception as e:
+            logger.warning(f"Cannot parse start_time for #{meeting_id}: {e}")
+            continue
+
+        # Already past — mark as missed and skip
+        if start_time < now - timedelta(minutes=30):
+            await _log_meeting_event(meeting_id, "missed")
+            logger.info(
+                f"Meeting #{meeting_id} '{subject}' was past its start time — marked missed"
+            )
+            missed += 1
+            continue
+
+        record_at = start_time - timedelta(minutes=pre_buffer)
+        if record_at < now:
+            record_at = now + timedelta(seconds=10)
+
+        scheduler.add_job(
+            _record_meeting_task,
+            trigger=DateTrigger(run_date=record_at),
+            args=[meeting_id, meeting_url, subject, duration_seconds],
+            id=f"meeting_record_{meeting_id}",
+            name=f"Record: {subject[:50]}",
+            replace_existing=True,
+        )
+        rehydrated += 1
+        logger.info(
+            f"Rehydrated #{meeting_id} '{subject}' → recording at {record_at.isoformat()}"
+        )
+
+    logger.info(
+        f"Rehydration complete: {rehydrated} re-scheduled, {missed} marked missed"
+    )
+    return rehydrated
+
+
 async def scan_emails_and_schedule(scheduler: AsyncIOScheduler) -> int:
     """Scan all email accounts for meeting invites, store in DB, schedule recordings."""
     if _scanning_paused:

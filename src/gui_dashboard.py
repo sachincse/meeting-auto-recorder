@@ -643,6 +643,72 @@ class DashboardApp:
     # TAB 3: Settings
     # ══════════════════════════════════════════════════════════════
 
+    def _build_autostart_section(self, parent):
+        """Checkbox to enable/disable running the recorder on Windows login.
+
+        The registry entry (HKCU\\...\\Run) is the source of truth — toggling
+        the checkbox immediately writes/removes it, so the user doesn't have
+        to hit Save Settings for this to take effect.
+        """
+        from src.autostart import (
+            is_autostart_enabled,
+            enable_autostart,
+            disable_autostart,
+        )
+
+        asf = ttk.LabelFrame(parent, text="Auto-Start", padding=16)
+        asf.pack(fill=tk.X, pady=(0, 12))
+
+        self._autostart_var = tk.BooleanVar(value=is_autostart_enabled())
+        self._autostart_status_label = ttk.Label(
+            asf, text="", font=("Segoe UI", 9),
+            background=CARD_BG)
+
+        def _set_status(enabled: bool, failed: bool = False):
+            if failed:
+                self._autostart_status_label.config(
+                    text="Failed to update — check logs.", foreground=DANGER)
+            elif enabled:
+                self._autostart_status_label.config(
+                    text="Enabled — the recorder will launch silently on every Windows login.",
+                    foreground=SUCCESS)
+            else:
+                self._autostart_status_label.config(
+                    text="Disabled — the recorder will NOT start automatically.",
+                    foreground=TEXT_SEC)
+
+        def _toggle_autostart():
+            want = self._autostart_var.get()
+            try:
+                ok = enable_autostart() if want else disable_autostart()
+            except Exception as e:
+                logger.error(f"Auto-start toggle failed: {e}")
+                ok = False
+            if not ok:
+                # Revert checkbox to actual registry state on failure
+                self._autostart_var.set(is_autostart_enabled())
+                _set_status(self._autostart_var.get(), failed=True)
+                return
+            logger.info(f"Auto-start {'enabled' if want else 'disabled'} via Settings UI")
+            _set_status(want)
+
+        ttk.Checkbutton(
+            asf,
+            text="Start automatically with Windows (runs in the background, records interviews on schedule)",
+            variable=self._autostart_var,
+            command=_toggle_autostart,
+        ).pack(anchor="w", pady=3)
+
+        ttk.Label(
+            asf,
+            text="When ON, the recorder is registered in Windows Startup and launches hidden on every login — it keeps monitoring your email and auto-records meetings. Turn OFF to stop it from starting with Windows.",
+            foreground=TEXT_SEC, background=CARD_BG, font=("Segoe UI", 8),
+            wraplength=640, justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
+        self._autostart_status_label.pack(anchor="w", pady=(8, 0))
+        _set_status(self._autostart_var.get())
+
     def _build_settings_tab(self, notebook):
         outer = ttk.Frame(notebook)
         notebook.add(outer, text="  Settings  ")
@@ -661,6 +727,9 @@ class DashboardApp:
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # ── Auto-Start (runs recorder in background on Windows login) ──
+        self._build_autostart_section(inner)
 
         # ── Audio Devices ──
         dev = ttk.LabelFrame(inner, text="Audio Devices", padding=16)

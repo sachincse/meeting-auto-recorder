@@ -130,7 +130,7 @@ def run_tray_mode():
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
         from src.config import get_scheduler_config
-        from src.meeting_scheduler import scan_emails_and_schedule
+        from src.meeting_scheduler import scan_emails_and_schedule, rehydrate_scheduled_meetings
 
         sched_cfg = get_scheduler_config()
         scan_cron = sched_cfg["scan_cron"]
@@ -163,6 +163,13 @@ def run_tray_mode():
                 name="Scan emails for meetings",
                 replace_existing=True,
             )
+
+            # Re-register DateTrigger jobs for meetings that were scheduled
+            # in a previous tray session but lost when the process exited
+            # (APScheduler's default MemoryJobStore doesn't persist across
+            # reboots). Do this BEFORE the first email scan so upcoming
+            # interviews get their trigger back immediately on startup.
+            await rehydrate_scheduled_meetings(scheduler)
 
             # Initial scan
             await scan_emails_and_schedule(scheduler)
