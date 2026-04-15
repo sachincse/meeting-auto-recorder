@@ -46,6 +46,33 @@ def get_email_accounts() -> list[dict]:
     return [a for a in accounts if a.get("enabled", True)]
 
 
+def get_all_email_accounts() -> list[dict]:
+    """Return every configured email account, including disabled ones.
+
+    The Settings UI needs the disabled rows too so the user can re-enable them.
+    ``get_email_accounts`` (without prefix) is still used at scan time because
+    it filters out anything that isn't enabled.
+    """
+    cfg = load_config()
+    return list(cfg.get("email_accounts", []) or [])
+
+
+def save_email_accounts(accounts: list[dict]):
+    """Persist the email accounts list to config.yaml.
+
+    Other top-level config keys (recording, scheduler, devices, tray …) are
+    preserved — we reload the full config, overwrite ``email_accounts`` only,
+    then rewrite the file. config.yaml is gitignored so credentials never
+    leave the local machine.
+    """
+    cfg = load_config()
+    cfg["email_accounts"] = accounts
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_PATH, "w") as f:
+        yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+    logger.info(f"Saved {len(accounts)} email account(s) to config.yaml")
+
+
 def get_recording_config() -> dict:
     cfg = load_config()
     prefs = load_user_prefs()

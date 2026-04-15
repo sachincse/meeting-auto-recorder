@@ -8,7 +8,7 @@ import sys
 import threading
 import tkinter as tk
 from datetime import datetime, timezone
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -169,6 +169,55 @@ class DashboardApp:
         style.configure("TCombobox", padding=[6, 4])
         style.configure("TCheckbutton", background=CARD_BG, foreground=TEXT, font=("Segoe UI", 9))
         style.configure("TSpinbox", padding=[6, 4])
+
+        # Replace the clam theme's default X-style checkbox indicator with a
+        # rounded white box (unchecked) and a green box + white ✓ (checked).
+        # Keep PhotoImage refs on self so Tk doesn't garbage-collect them.
+        self._checkbox_imgs = self._create_checkbox_indicator_images()
+        try:
+            style.element_create(
+                "Custom.indicator", "image", self._checkbox_imgs[0],
+                ("selected", self._checkbox_imgs[1]),
+                ("!selected", self._checkbox_imgs[0]),
+                padding=2, sticky="w",
+            )
+            style.layout("TCheckbutton", [
+                ("Checkbutton.padding", {"sticky": "nswe", "children": [
+                    ("Custom.indicator", {"side": "left", "sticky": ""}),
+                    ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+                        ("Checkbutton.label", {"sticky": "nswe"}),
+                    ]}),
+                ]}),
+            ])
+        except tk.TclError:
+            # Element already exists (second GUI open in the same process) — safe to ignore.
+            pass
+
+    def _create_checkbox_indicator_images(self):
+        """Draw the unchecked + checked (green with white ✓) indicator images."""
+        from PIL import Image, ImageDraw, ImageTk
+
+        size = 18
+        # Unchecked — white square with grey border
+        unchecked = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(unchecked)
+        d.rounded_rectangle(
+            [1, 1, size - 2, size - 2], radius=3,
+            fill="#ffffff", outline="#cbd5e1", width=2,
+        )
+
+        # Checked — green fill with white check mark
+        checked = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(checked)
+        d.rounded_rectangle(
+            [1, 1, size - 2, size - 2], radius=3,
+            fill=SUCCESS, outline=SUCCESS, width=2,
+        )
+        # Draw ✓ with two line segments
+        d.line([(4, 9), (8, 13)], fill="white", width=2)
+        d.line([(8, 13), (14, 5)], fill="white", width=2)
+
+        return (ImageTk.PhotoImage(unchecked), ImageTk.PhotoImage(checked))
 
     # ── Initial data load ─────────────────────────────────────────
 
@@ -643,6 +692,332 @@ class DashboardApp:
     # TAB 3: Settings
     # ══════════════════════════════════════════════════════════════
 
+    # ══════════════════════════════════════════════════════════════
+    # Email Accounts (Settings > Email Accounts)
+    # ══════════════════════════════════════════════════════════════
+
+    # IMAP presets for the Add/Edit dialog
+    _EMAIL_PROVIDER_PRESETS = {
+        "Gmail": {
+            "host": "imap.gmail.com", "port": 993,
+            "help": "Use a 16-char App Password from myaccount.google.com/apppasswords "
+                    "(2-Step Verification must be on). Your normal Gmail password will NOT work.",
+        },
+        "Outlook / Office 365": {
+            "host": "outlook.office365.com", "port": 993,
+            "help": "Use your Microsoft account email. If MFA is enabled, create an App Password "
+                    "in account.microsoft.com → Security.",
+        },
+        "Yahoo Mail": {
+            "host": "imap.mail.yahoo.com", "port": 993,
+            "help": "Generate an app password at login.yahoo.com → Account Security → "
+                    "Generate app password.",
+        },
+        "iCloud Mail": {
+            "host": "imap.mail.me.com", "port": 993,
+            "help": "Create an app-specific password at appleid.apple.com → Sign-In and Security.",
+        },
+        "Custom IMAP": {
+            "host": "", "port": 993,
+            "help": "Enter the IMAP host and port for your provider. Most servers use SSL on port 993.",
+        },
+    }
+
+    def _build_email_accounts_section(self, parent):
+        """Manage the IMAP mailboxes the recorder scans for meeting invites."""
+        frame = ttk.LabelFrame(parent, text="Email Accounts", padding=16)
+        frame.pack(fill=tk.X, pady=(0, 12))
+
+        ttk.Label(
+            frame,
+            text="Add the mailboxes that receive your interview invites. The recorder logs "
+                 "into each one over IMAP on a schedule, finds meeting links, and schedules "
+                 "recordings. You can add more than one account.",
+            foreground=TEXT_SEC, background=CARD_BG, font=("Segoe UI", 8),
+            wraplength=640, justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+
+        cols = ("name", "email", "host", "status")
+        tv = ttk.Treeview(frame, columns=cols, show="headings", height=4)
+        tv.heading("name", text="Name")
+        tv.heading("email", text="Email")
+        tv.heading("host", text="IMAP Host")
+        tv.heading("status", text="Status")
+        tv.column("name", width=140, stretch=True)
+        tv.column("email", width=220, stretch=True)
+        tv.column("host", width=180, stretch=True)
+        tv.column("status", width=80, stretch=False, anchor="center")
+        tv.pack(fill=tk.X, pady=(0, 8))
+        tv.bind("<Double-1>", lambda _e: self._edit_selected_email_account())
+        self._email_tv = tv
+
+        btnrow = ttk.Frame(frame, style="Card.TFrame")
+        btnrow.pack(fill=tk.X)
+        ttk.Button(
+            btnrow, text="Add Email", style="Primary.TButton",
+            command=lambda: self._open_email_dialog(None),
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btnrow, text="Edit", command=self._edit_selected_email_account
+                   ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btnrow, text="Remove", style="Danger.TButton",
+                   command=self._remove_selected_email_account
+                   ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btnrow, text="Test Connection",
+                   command=self._test_selected_email_account).pack(side=tk.LEFT)
+
+        self._refresh_email_accounts_list()
+
+    def _refresh_email_accounts_list(self):
+        from src.config import get_all_email_accounts
+        tv = self._email_tv
+        tv.delete(*tv.get_children())
+        for i, a in enumerate(get_all_email_accounts()):
+            status = "Enabled" if a.get("enabled", True) else "Disabled"
+            tv.insert("", "end", iid=str(i), values=(
+                a.get("name", "") or "(unnamed)",
+                a.get("imap_user", ""),
+                f"{a.get('imap_host', '')}:{a.get('imap_port', 993)}",
+                status,
+            ))
+
+    def _selected_email_index(self):
+        sel = self._email_tv.selection()
+        if not sel:
+            messagebox.showinfo("No selection",
+                                "Select an account in the list first.", parent=self.root)
+            return None
+        return int(sel[0])
+
+    def _edit_selected_email_account(self):
+        idx = self._selected_email_index()
+        if idx is not None:
+            self._open_email_dialog(idx)
+
+    def _remove_selected_email_account(self):
+        from src.config import get_all_email_accounts, save_email_accounts
+        idx = self._selected_email_index()
+        if idx is None:
+            return
+        accounts = get_all_email_accounts()
+        if idx >= len(accounts):
+            return
+        name = accounts[idx].get("name", "") or accounts[idx].get("imap_user", "?")
+        if not messagebox.askyesno(
+            "Remove account",
+            f"Remove '{name}' from scanned mailboxes?\n\nThis cannot be undone.",
+            parent=self.root,
+        ):
+            return
+        del accounts[idx]
+        save_email_accounts(accounts)
+        self._refresh_email_accounts_list()
+        logger.info(f"Email account '{name}' removed via Settings UI")
+
+    def _test_selected_email_account(self):
+        from src.config import get_all_email_accounts
+        from src.email_reader import test_imap_connection
+        idx = self._selected_email_index()
+        if idx is None:
+            return
+        accounts = get_all_email_accounts()
+        if idx >= len(accounts):
+            return
+        acct = accounts[idx]
+        messagebox.showinfo("Testing…",
+                            f"Connecting to {acct.get('imap_host', '')} as {acct.get('imap_user', '')}…",
+                            parent=self.root)
+
+        def _run():
+            ok, msg = test_imap_connection(acct)
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Connection OK" if ok else "Connection failed", msg, parent=self.root,
+            ))
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _open_email_dialog(self, index):
+        """Modal Add/Edit dialog for a single email account."""
+        from src.config import get_all_email_accounts, save_email_accounts
+        from src.email_reader import test_imap_connection
+
+        accounts = get_all_email_accounts()
+        editing = index is not None and 0 <= index < len(accounts)
+        account = dict(accounts[index]) if editing else {
+            "name": "",
+            "imap_host": "imap.gmail.com",
+            "imap_port": 993,
+            "imap_user": "",
+            "imap_pass": "",
+            "imap_folder": "INBOX",
+            "enabled": True,
+        }
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Edit Email Account" if editing else "Add Email Account")
+        dlg.configure(bg=BG)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        main = ttk.Frame(dlg, padding=20)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        # Detect initial provider from the existing host
+        def _detect_provider(host):
+            for k, v in self._EMAIL_PROVIDER_PRESETS.items():
+                if v["host"] and v["host"] == host:
+                    return k
+            return "Custom IMAP"
+
+        r = 0
+        ttk.Label(main, text="Provider:", background=BG).grid(
+            row=r, column=0, sticky="w", pady=(0, 4), padx=(0, 10))
+        prov_var = tk.StringVar(value=_detect_provider(account.get("imap_host", "")))
+        prov_combo = ttk.Combobox(
+            main, textvariable=prov_var,
+            values=list(self._EMAIL_PROVIDER_PRESETS.keys()),
+            state="readonly", width=28,
+        )
+        prov_combo.grid(row=r, column=1, sticky="ew", pady=(0, 4))
+        r += 1
+
+        help_var = tk.StringVar(
+            value=self._EMAIL_PROVIDER_PRESETS[prov_var.get()]["help"])
+        ttk.Label(main, textvariable=help_var, foreground=TEXT_SEC, background=BG,
+                  wraplength=440, font=("Segoe UI", 8), justify="left").grid(
+            row=r, column=0, columnspan=2, sticky="w", pady=(2, 10))
+        r += 1
+
+        def _add_labelled_entry(label, var, show=None, width=None):
+            nonlocal r
+            ttk.Label(main, text=label, background=BG).grid(
+                row=r, column=0, sticky="w", pady=4, padx=(0, 10))
+            kwargs = {"textvariable": var}
+            if show is not None:
+                kwargs["show"] = show
+            if width is not None:
+                kwargs["width"] = width
+            entry = ttk.Entry(main, **kwargs)
+            entry.grid(row=r, column=1, sticky="ew", pady=4)
+            r += 1
+            return entry
+
+        name_var = tk.StringVar(value=account.get("name", ""))
+        _add_labelled_entry("Account Name:", name_var)
+
+        user_var = tk.StringVar(value=account.get("imap_user", ""))
+        _add_labelled_entry("Email Address:", user_var)
+
+        # Password row with Show toggle
+        ttk.Label(main, text="App Password:", background=BG).grid(
+            row=r, column=0, sticky="w", pady=4, padx=(0, 10))
+        pw_row = ttk.Frame(main)
+        pw_row.grid(row=r, column=1, sticky="ew", pady=4)
+        pass_var = tk.StringVar(value=account.get("imap_pass", ""))
+        pass_entry = ttk.Entry(pw_row, textvariable=pass_var, show="•")
+        pass_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        show_var = tk.BooleanVar(value=False)
+
+        def _toggle_pw():
+            pass_entry.config(show="" if show_var.get() else "•")
+
+        ttk.Checkbutton(pw_row, text="Show", variable=show_var,
+                        command=_toggle_pw).pack(side=tk.LEFT, padx=(8, 0))
+        r += 1
+
+        host_var = tk.StringVar(value=account.get("imap_host", ""))
+        _add_labelled_entry("IMAP Host:", host_var)
+
+        port_var = tk.StringVar(value=str(account.get("imap_port", 993)))
+        _add_labelled_entry("IMAP Port:", port_var, width=10)
+
+        folder_var = tk.StringVar(value=account.get("imap_folder", "INBOX"))
+        _add_labelled_entry("IMAP Folder:", folder_var)
+
+        enabled_var = tk.BooleanVar(value=account.get("enabled", True))
+        ttk.Checkbutton(main, text="Enabled — include this account in scans",
+                        variable=enabled_var).grid(
+            row=r, column=0, columnspan=2, sticky="w", pady=(10, 4))
+        r += 1
+
+        status_var = tk.StringVar()
+        status_lbl = ttk.Label(main, textvariable=status_var, background=BG,
+                                wraplength=480, justify="left")
+        status_lbl.grid(row=r, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        r += 1
+
+        main.columnconfigure(1, weight=1)
+
+        def _on_provider_change(*_):
+            p = self._EMAIL_PROVIDER_PRESETS.get(prov_var.get())
+            if not p:
+                return
+            if p["host"]:
+                host_var.set(p["host"])
+                port_var.set(str(p["port"]))
+            help_var.set(p["help"])
+
+        prov_combo.bind("<<ComboboxSelected>>", _on_provider_change)
+
+        def _collect():
+            port = port_var.get().strip()
+            return {
+                "name": (name_var.get().strip()
+                         or user_var.get().strip() or "Account"),
+                "imap_host": host_var.get().strip(),
+                "imap_port": int(port) if port.isdigit() else 993,
+                "imap_user": user_var.get().strip(),
+                "imap_pass": pass_var.get(),
+                "imap_folder": folder_var.get().strip() or "INBOX",
+                "enabled": enabled_var.get(),
+            }
+
+        def _on_test():
+            status_var.set("Testing connection…")
+            status_lbl.config(foreground=TEXT_SEC)
+            acct = _collect()
+
+            def _run():
+                ok, msg = test_imap_connection(acct)
+                dlg.after(0, lambda: (
+                    status_var.set(("✓  " if ok else "✗  ") + msg),
+                    status_lbl.config(foreground=SUCCESS if ok else DANGER),
+                ))
+            threading.Thread(target=_run, daemon=True).start()
+
+        def _on_save():
+            new_acct = _collect()
+            if not new_acct["imap_user"] or not new_acct["imap_pass"] or not new_acct["imap_host"]:
+                status_var.set("Email, password and IMAP host are all required.")
+                status_lbl.config(foreground=DANGER)
+                return
+            all_accts = get_all_email_accounts()
+            if editing:
+                all_accts[index] = new_acct
+                logger.info(f"Updated email account '{new_acct['name']}' via Settings UI")
+            else:
+                all_accts.append(new_acct)
+                logger.info(f"Added email account '{new_acct['name']}' via Settings UI")
+            save_email_accounts(all_accts)
+            self._refresh_email_accounts_list()
+            dlg.destroy()
+
+        # Buttons
+        btns = ttk.Frame(main)
+        btns.grid(row=r, column=0, columnspan=2, sticky="e", pady=(18, 0))
+        ttk.Button(btns, text="Test Connection", command=_on_test
+                   ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btns, text="Cancel", command=dlg.destroy
+                   ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btns, text="Save", style="Primary.TButton", command=_on_save
+                   ).pack(side=tk.LEFT)
+
+        # Center the dialog over its parent
+        dlg.update_idletasks()
+        w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        px = self.root.winfo_rootx() + (self.root.winfo_width() - w) // 2
+        py = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
+
     def _build_autostart_section(self, parent):
         """Checkbox to enable/disable running the recorder on Windows login.
 
@@ -727,6 +1102,9 @@ class DashboardApp:
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # ── Email Accounts (IMAP mailboxes scanned for interview invites) ──
+        self._build_email_accounts_section(inner)
 
         # ── Auto-Start (runs recorder in background on Windows login) ──
         self._build_autostart_section(inner)

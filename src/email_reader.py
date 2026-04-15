@@ -205,6 +205,46 @@ def _scan_single_account(account: dict, since_date: str, max_emails: int) -> lis
     return meetings
 
 
+def test_imap_connection(account: dict) -> tuple[bool, str]:
+    """Attempt a login + folder select with the given credentials.
+
+    Returns ``(success, message)``. Used by the Settings UI's "Test" button
+    so users can verify a new account before saving.
+    """
+    host = account.get("imap_host", "")
+    port = account.get("imap_port", 993)
+    user = account.get("imap_user", "")
+    password = account.get("imap_pass", "")
+    folder = account.get("imap_folder", "INBOX")
+
+    if not host:
+        return False, "IMAP host is required"
+    if not user or not password:
+        return False, "Email address and password are required"
+
+    try:
+        mail = imaplib.IMAP4_SSL(host, int(port))
+    except Exception as e:
+        return False, f"Could not reach {host}:{port} ({e})"
+
+    try:
+        try:
+            mail.login(user, password)
+        except imaplib.IMAP4.error as e:
+            return False, f"Login rejected: {e}. For Gmail/Yahoo, use an App Password."
+        status, _ = mail.select(folder, readonly=True)
+        if status != "OK":
+            return False, f"Login OK, but folder '{folder}' could not be opened"
+        return True, f"Connected as {user} — folder '{folder}' is reachable"
+    except Exception as e:
+        return False, f"Unexpected error: {e}"
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+
+
 def fetch_meeting_invites(since_date: Optional[str] = None) -> list[dict]:
     """Scan ALL configured email accounts for meeting invitations."""
     accounts = get_email_accounts()
