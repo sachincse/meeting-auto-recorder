@@ -3,10 +3,12 @@
 import asyncio
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from datetime import datetime, timezone
 from tkinter import ttk, filedialog, messagebox
 from typing import Optional
@@ -219,6 +221,76 @@ class DashboardApp:
 
         return (ImageTk.PhotoImage(unchecked), ImageTk.PhotoImage(checked))
 
+    # ── Inline hyperlinks ─────────────────────────────────────────
+    # Tk ``Label`` can't render clickable URLs inline with wrapped text.
+    # Use a borderless read-only ``Text`` widget that wraps naturally and
+    # attaches click bindings to URL ranges via tags.
+    _URL_RE = re.compile(
+        r'(https?://[^\s)]+|(?:[\w-]+\.)+(?:com|org|net|io|ai|app|in|co|dev)(?:/[^\s)]*)?)',
+        re.IGNORECASE,
+    )
+
+    def _make_hyperlinked_text(
+        self, parent, text, wraplength_px=440,
+        fg=TEXT_SEC, bg=None, font=("Segoe UI", 8),
+    ):
+        """Render help text with URLs as blue clickable links below.
+
+        Tk's ``Label`` can't render inline clickable runs, and ``Text`` is
+        fiddly to auto-size. We sidestep both by stripping URLs from the
+        prose and rendering them as separate, clickable ``ttk.Label``
+        widgets stacked under the narrative text. Looks clean and works
+        reliably regardless of DPI or layout timing.
+
+        Bare domains (``myaccount.google.com/apppasswords``) are treated as
+        links too; an ``https://`` prefix is added when opening.
+        """
+        bg = bg if bg is not None else BG
+
+        container = ttk.Frame(parent)
+        if bg == CARD_BG:
+            container.configure(style="Card.TFrame")
+
+        # Extract URLs and build the prose (URL occurrences replaced with
+        # placeholder so the sentence still reads naturally).
+        urls = []
+        prose_parts = []
+        pos = 0
+        for m in self._URL_RE.finditer(text):
+            raw = m.group(0)
+            url_text = raw.rstrip(".,);:!?")
+            full_url = url_text if url_text.startswith("http") else f"https://{url_text}"
+            urls.append((url_text, full_url))
+            prose_parts.append(text[pos:m.start()])
+            # Leave the trailing punctuation in the prose
+            prose_parts.append(raw[len(url_text):])
+            pos = m.end()
+        prose_parts.append(text[pos:])
+        prose = "".join(prose_parts).strip()
+        # Squash multiple spaces left where URL used to be
+        prose = re.sub(r"\s+", " ", prose)
+
+        label_kwargs = dict(
+            foreground=fg, background=bg, font=font,
+            wraplength=wraplength_px, justify="left",
+        )
+
+        if prose:
+            ttk.Label(container, text=prose, **label_kwargs).pack(
+                anchor="w", fill="x")
+
+        for display_url, full_url in urls:
+            link = tk.Label(
+                container, text=display_url, font=font + ("underline",),
+                foreground=PRIMARY, background=bg,
+                cursor="hand2", anchor="w", justify="left",
+                wraplength=wraplength_px,
+            )
+            link.pack(anchor="w", fill="x", pady=(2, 0))
+            link.bind("<Button-1>", lambda _e, u=full_url: webbrowser.open(u))
+
+        return container
+
     # ── Initial data load ─────────────────────────────────────────
 
     def _load_initial_data(self):
@@ -384,10 +456,11 @@ class DashboardApp:
                                        background=CARD_BG, font=("Segoe UI", 9))
         self._login_status.grid(row=5, column=0, sticky="w", pady=(0, 8))
 
-        ttk.Label(self._login_frame,
-                  text="Don't have an account? Register at interview-intelligence-production-7e43.up.railway.app",
-                  foreground=TEXT_SEC, background=CARD_BG, font=("Segoe UI", 8)).grid(
-            row=6, column=0, sticky="w")
+        self._make_hyperlinked_text(
+            self._login_frame,
+            f"Don't have an account? Register at {_SAARTHI_SERVER}",
+            wraplength_px=500, bg=CARD_BG,
+        ).grid(row=6, column=0, sticky="w")
 
         self._login_frame.columnconfigure(0, weight=1)
 
@@ -880,11 +953,23 @@ class DashboardApp:
         prov_combo.grid(row=r, column=1, sticky="ew", pady=(0, 4))
         r += 1
 
-        help_var = tk.StringVar(
-            value=self._EMAIL_PROVIDER_PRESETS[prov_var.get()]["help"])
-        ttk.Label(main, textvariable=help_var, foreground=TEXT_SEC, background=BG,
-                  wraplength=440, font=("Segoe UI", 8), justify="left").grid(
-            row=r, column=0, columnspan=2, sticky="w", pady=(2, 10))
+        # Provider help line — URLs inside the preset's `help` text are
+        # rendered as clickable links (e.g. myaccount.google.com/apppasswords).
+        # We rebuild the widget whenever the provider changes because the
+        # link regions are baked in when inserting.
+        help_container = ttk.Frame(main)
+        help_container.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(2, 10))
+        help_container.columnconfigure(0, weight=1)
+
+        def _render_provider_help():
+            for w in help_container.winfo_children():
+                w.destroy()
+            help_text = self._EMAIL_PROVIDER_PRESETS[prov_var.get()]["help"]
+            self._make_hyperlinked_text(
+                help_container, help_text, wraplength_px=440, bg=BG,
+            ).grid(row=0, column=0, sticky="ew")
+
+        _render_provider_help()
         r += 1
 
         def _add_labelled_entry(label, var, show=None, width=None):
@@ -954,7 +1039,7 @@ class DashboardApp:
             if p["host"]:
                 host_var.set(p["host"])
                 port_var.set(str(p["port"]))
-            help_var.set(p["help"])
+            _render_provider_help()
 
         prov_combo.bind("<<ComboboxSelected>>", _on_provider_change)
 
